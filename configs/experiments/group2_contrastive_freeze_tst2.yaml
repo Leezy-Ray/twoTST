@@ -1,0 +1,92 @@
+# 实验组2: 对比学习实验 - 冻结TST2
+# 使用对比学习，只冻结TST2（连接Transformer），训练TST1
+
+experiment:
+  name: "contrastive_freeze_tst2"
+  description: "对比学习实验：冻结TST2，只训练TST1"
+  group: "contrastive"
+
+data:
+  data_path: /root/workplace/exp/TwoTST/data/processed/processed_data.pkl
+  n_rois: 200
+  time_points: 100
+  pcc_dim: 19900
+  split_ratio:
+    train: 0.7
+    val: 0.1
+    test: 0.2
+  sliding_window:
+    enabled: false
+
+pretrain:
+  use_pretrained: true
+  tst1:
+    checkpoint: /root/workplace/exp/TwoTST/checkpoints/tst1/tst1_best.pt
+  tst2:
+    checkpoint: /root/workplace/exp/TwoTST/checkpoints/tst2/tst2_best.pt
+
+model:
+  tst1:
+    emb_dim: 512
+    n_heads: 8
+    n_layers: 6
+    dim_feedforward: 2048
+    dropout: 0.1
+  tst2:
+    d_model: 256
+    n_heads: 8
+    n_layers: 2
+    dim_feedforward: 512
+    dropout: 0.1
+
+contrastive:
+  enabled: true
+  epochs: 50
+  batch_size: 32
+  lr: 1e-4
+  weight_decay: 1e-4
+  temperature: 0.07
+  proj_hidden_dim: 256
+  proj_output_dim: 128
+  loss_type: infonce
+  # 冻结TST2，只训练TST1
+  freeze_tst1: false
+  freeze_tst2: true
+  mode: "both"
+
+fusion:
+  type: cross_attention
+  use_tst1: true
+  use_tst2: true
+  cross_attention:
+    n_heads: 8
+    dropout: 0.1
+
+finetune:
+  epochs: 100
+  batch_size: 32
+  lr: 5e-5
+  weight_decay: 1e-4
+  patience: 20
+  n_folds: 5
+  freeze_tst1: false
+  freeze_tst2: false
+  feature_source: "contrastive"
+  classifier:
+    hidden_dims: [256, 64]
+    dropout: 0.3
+  save_dir: /root/workplace/exp/TwoTST/checkpoints/finetune/contrastive_freeze_tst2
+
+training:
+  device: cuda
+  seed: 42
+  num_workers: 4
+
+logging:
+  log_dir: /root/workplace/exp/TwoTST/logs/contrastive_freeze_tst2
+  tensorboard: true
+  save_best_only: true
+
+evaluation:
+  metrics: [auc, accuracy, sensitivity, specificity, f1]
+  primary_metric: auc

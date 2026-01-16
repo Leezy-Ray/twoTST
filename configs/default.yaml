@@ -1,0 +1,103 @@
+# TwoTST 双流自监督预训练框架配置文件
+
+# 数据配置
+data:
+  data_path: /root/workplace/exp/TwoTST/data/fmri.npy
+  processed_path: /root/workplace/exp/TwoTST/data/processed/processed_data.pkl
+  n_rois: 200
+  time_points: 100
+  pcc_dim: 19900  # 200 * 199 / 2
+  
+  # 滑动窗口配置（可选）
+  sliding_window:
+    enabled: false
+    window_size: 50
+    stride: 25
+
+# TST1 (时序Transformer) 配置
+tst1:
+  emb_dim: 512
+  n_heads: 8
+  n_layers: 6
+  dim_feedforward: 2048
+  dropout: 0.1
+  max_seq_len: 200
+  use_cls_token: true
+
+# TST2 (连接Transformer) 配置
+tst2:
+  d_model: 256
+  n_heads: 8
+  n_layers: 2
+  dim_feedforward: 512
+  dropout: 0.1
+
+# 预训练配置
+pretrain:
+  # TST1 预训练
+  tst1:
+    epochs: 100
+    batch_size: 32
+    lr: 1e-4
+    weight_decay: 1e-4
+    mask_ratio: null  # null 表示随机选择 0.25 或 0.5
+    save_every: 10
+    save_dir: /root/workplace/exp/TwoTST/checkpoints/tst1
+  
+  # TST2 预训练
+  tst2:
+    epochs: 100
+    batch_size: 32
+    lr: 1e-4
+    weight_decay: 1e-4
+    mask_ratio: 0.15
+    save_every: 10
+    save_dir: /root/workplace/exp/TwoTST/checkpoints/tst2
+
+# 对比学习配置（可选）
+contrastive:
+  enabled: false
+  temperature: 0.07
+  epochs: 50
+  proj_hidden_dim: 256
+  proj_output_dim: 128
+  loss_type: infonce  # infonce 或 ntxent
+
+# 融合模块配置
+fusion:
+  type: cross_attention  # concat, gated, cross_attention, bilinear, attention_pooling
+  # 特定融合方法的额外配置
+  gated:
+    hidden_dim: 512
+  cross_attention:
+    n_heads: 8
+    dropout: 0.1
+  bilinear:
+    output_dim: 256
+
+# 微调配置
+finetune:
+  epochs: 100
+  batch_size: 32
+  lr: 5e-5
+  weight_decay: 1e-4
+  n_folds: 5
+  patience: 20
+  save_dir: /root/workplace/exp/TwoTST/checkpoints/finetune
+  
+  # 预训练权重路径（可选）
+  tst1_checkpoint: null  # /root/workplace/exp/TwoTST/checkpoints/tst1/tst1_best.pt
+  tst2_checkpoint: null  # /root/workplace/exp/TwoTST/checkpoints/tst2/tst2_best.pt
+
+# 训练配置
+training:
+  device: cuda
+  seed: 42
+  num_workers: 4
+  amp: false  # 混合精度训练
+
+# 日志配置
+logging:
+  log_dir: /root/workplace/exp/TwoTST/logs
+  tensorboard: true
+  print_freq: 10

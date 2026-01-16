@@ -1,0 +1,78 @@
+# 实验组4: 单流对照实验 - 只用TST1
+# 只使用时序Transformer的特征进行分类
+
+experiment:
+  name: "single_tst1"
+  description: "单流对照实验：只使用TST1（时序Transformer）"
+  group: "ablation"
+
+data:
+  data_path: /root/workplace/exp/TwoTST/data/processed/processed_data.pkl
+  n_rois: 200
+  time_points: 100
+  pcc_dim: 19900
+  split_ratio:
+    train: 0.7
+    val: 0.1
+    test: 0.2
+  sliding_window:
+    enabled: false
+
+pretrain:
+  use_pretrained: true
+  tst1:
+    checkpoint: /root/workplace/exp/TwoTST/checkpoints/tst1/tst1_best.pt
+  tst2:
+    checkpoint: /root/workplace/exp/TwoTST/checkpoints/tst2/tst2_best.pt
+
+model:
+  tst1:
+    emb_dim: 512
+    n_heads: 8
+    n_layers: 6
+    dim_feedforward: 2048
+    dropout: 0.1
+  tst2:
+    d_model: 256
+    n_heads: 8
+    n_layers: 2
+    dim_feedforward: 512
+    dropout: 0.1
+
+contrastive:
+  enabled: false
+
+fusion:
+  type: concat  # 单流时fusion类型不重要
+  # 只使用TST1
+  use_tst1: true
+  use_tst2: false
+
+finetune:
+  epochs: 100
+  batch_size: 32
+  lr: 5e-5
+  weight_decay: 1e-4
+  patience: 20
+  n_folds: 5
+  freeze_tst1: false
+  freeze_tst2: false
+  feature_source: "pretrain"
+  classifier:
+    hidden_dims: [256, 64]
+    dropout: 0.3
+  save_dir: /root/workplace/exp/TwoTST/checkpoints/finetune/single_tst1
+
+training:
+  device: cuda
+  seed: 42
+  num_workers: 4
+
+logging:
+  log_dir: /root/workplace/exp/TwoTST/logs/single_tst1
+  tensorboard: true
+  save_best_only: true
+
+evaluation:
+  metrics: [auc, accuracy, sensitivity, specificity, f1]
+  primary_metric: auc

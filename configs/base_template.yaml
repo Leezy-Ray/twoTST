@@ -1,0 +1,201 @@
+# TwoTST 实验配置模板
+# 此文件定义了所有可配置的实验参数
+
+# ============================================================
+# 实验信息
+# ============================================================
+experiment:
+  name: "experiment_name"
+  description: "实验描述"
+  group: "baseline"  # baseline, contrastive, finetune, ablation
+
+# ============================================================
+# 数据配置
+# ============================================================
+data:
+  data_path: /root/workplace/exp/TwoTST/data/processed/processed_data.pkl
+  n_rois: 200
+  time_points: 100
+  pcc_dim: 19900
+  
+  # 数据划分比例
+  split_ratio:
+    train: 0.7
+    val: 0.1
+    test: 0.2
+  
+  # 滑动窗口数据增强（预训练阶段）
+  sliding_window:
+    enabled: false
+    window_size: 50
+    stride: 25
+
+# ============================================================
+# 预训练配置
+# ============================================================
+pretrain:
+  # 是否使用已训练好的预训练模型
+  use_pretrained: true
+  
+  # TST1 (时序Transformer)
+  tst1:
+    enabled: true
+    checkpoint: /root/workplace/exp/TwoTST/checkpoints/tst1/tst1_best.pt
+    epochs: 100
+    batch_size: 32
+    lr: 1e-4
+    weight_decay: 1e-4
+    mask_ratio: null  # null表示随机选择0.25或0.5
+  
+  # TST2 (连接Transformer)
+  tst2:
+    enabled: true
+    checkpoint: /root/workplace/exp/TwoTST/checkpoints/tst2/tst2_best.pt
+    epochs: 100
+    batch_size: 32
+    lr: 1e-4
+    weight_decay: 1e-4
+    mask_ratio: 0.15
+
+# ============================================================
+# 模型架构配置
+# ============================================================
+model:
+  # TST1 架构
+  tst1:
+    emb_dim: 512
+    n_heads: 8
+    n_layers: 6
+    dim_feedforward: 2048
+    dropout: 0.1
+    max_seq_len: 200
+    use_cls_token: true
+  
+  # TST2 架构
+  tst2:
+    d_model: 256
+    n_heads: 8
+    n_layers: 2
+    dim_feedforward: 512
+    dropout: 0.1
+
+# ============================================================
+# 对比学习配置
+# ============================================================
+contrastive:
+  # 是否启用对比学习
+  enabled: false
+  
+  # 对比学习训练参数
+  epochs: 50
+  batch_size: 32
+  lr: 1e-4
+  weight_decay: 1e-4
+  temperature: 0.07
+  
+  # 投影头配置
+  proj_hidden_dim: 256
+  proj_output_dim: 128
+  
+  # 损失类型: infonce, ntxent
+  loss_type: infonce
+  
+  # 冻结策略
+  freeze_tst1: false  # 是否冻结TST1（时序Transformer）
+  freeze_tst2: false  # 是否冻结TST2（连接Transformer）
+  
+  # 对比学习训练模式（已废弃，实际由freeze_tst1和freeze_tst2控制）
+  # - "both": 训练两个TST的投影
+  mode: "both"
+
+# ============================================================
+# 融合配置
+# ============================================================
+fusion:
+  # 融合类型: concat, gated, cross_attention, bilinear, attention_pooling
+  type: cross_attention
+  
+  # 是否使用两个TST的特征
+  use_tst1: true
+  use_tst2: true
+  
+  # 各融合方法的特定配置
+  concat:
+    hidden_dim: 512
+  
+  gated:
+    hidden_dim: 512
+  
+  cross_attention:
+    n_heads: 8
+    dropout: 0.1
+  
+  bilinear:
+    output_dim: 256
+  
+  attention_pooling:
+    hidden_dim: 256
+
+# ============================================================
+# 微调配置
+# ============================================================
+finetune:
+  # 训练参数
+  epochs: 100
+  batch_size: 32
+  lr: 5e-5
+  weight_decay: 1e-4
+  
+  # 早停
+  patience: 20
+  
+  # 交叉验证
+  n_folds: 5
+  
+  # 冻结策略
+  freeze_tst1: false  # 是否冻结TST1
+  freeze_tst2: false  # 是否冻结TST2
+  freeze_fusion: false  # 是否冻结融合层
+  
+  # 特征来源
+  # - "pretrain": 使用预训练后的TST特征
+  # - "contrastive": 使用对比学习后的TST特征
+  feature_source: "pretrain"
+  
+  # 分类器配置
+  classifier:
+    hidden_dims: [256, 64]
+    dropout: 0.3
+  
+  # 保存路径
+  save_dir: /root/workplace/exp/TwoTST/checkpoints/finetune
+
+# ============================================================
+# 训练配置
+# ============================================================
+training:
+  device: cuda
+  seed: 42
+  num_workers: 4
+  amp: false  # 混合精度训练
+
+# ============================================================
+# 日志配置
+# ============================================================
+logging:
+  log_dir: /root/workplace/exp/TwoTST/logs
+  tensorboard: true
+  print_freq: 10
+  save_best_only: true
+
+# ============================================================
+# 评估配置
+# ============================================================
+evaluation:
+  metrics:
+    - auc
+    - accuracy
+    - sensitivity
+    - specificity
+    - f1
+  primary_metric: auc  # 主要评估指标
