@@ -1,0 +1,51 @@
+# 数据和结果
+data/
+results/
+results_sw/
+
+# 模型检查点
+checkpoints/
+checkpoints_sw/
+
+# 日志文件
+logs/
+logs_sw/
+*.log
+tensorboard*.log
+
+# Python缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv
+
+# IDE配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.temp
+*.bak
+
+# 实验日志（保留少量作为示例的可选择性提交）
+experiments_*.log
+pretrain*.log
