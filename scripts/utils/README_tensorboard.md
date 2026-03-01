@@ -5,7 +5,7 @@
 ### 方法1: 使用启动脚本（推荐）
 
 ```bash
-bash scripts/start_tensorboard.sh
+bash scripts/utils/start_tensorboard.sh
 ```
 
 默认配置：
@@ -15,10 +15,10 @@ bash scripts/start_tensorboard.sh
 ### 方法2: 自定义参数
 
 ```bash
-bash scripts/start_tensorboard.sh <log_dir> <port>
+bash scripts/utils/start_tensorboard.sh <log_dir> <port>
 
 # 示例
-bash scripts/start_tensorboard.sh logs 6007
+bash scripts/utils/start_tensorboard.sh logs 6007
 ```
 
 ### 方法3: 直接启动

@@ -1,0 +1,80 @@
+contrastive:
+  batch_size: 64
+  enabled: true
+  epochs: 50
+  freeze_tst1: true
+  freeze_tst2: false
+  loss_type: infonce
+  lr: 0.0001
+  proj_hidden_dim: 256
+  proj_output_dim: 128
+  temperature: 0.07
+  weight_decay: 0.0001
+  load_checkpoint: /root/autodl-tmp/TwoTST/checkpoints_sw/contrastive_checkpoint.pt
+data:
+  data_path: /root/autodl-tmp/TwoTST/data/processed_sw/processed_data.pkl
+  sliding_window:
+    enabled: true
+    stride: 16
+    window_size: 32
+  split_ratio:
+    test: 0.2
+    train: 0.7
+    val: 0.1
+experiment:
+  description: 滑动窗口+投影头微调+门控多策略融合(5种策略软选择)
+  name: sw_projection_fusion_gated_multi
+finetune:
+  batch_size: 64
+  classifier:
+    dropout: 0.3
+    hidden_dims:
+    - 256
+    - 64
+  epochs: 150
+  freeze_tst1: false
+  freeze_tst2: false
+  use_projection: true
+  lr: 3.0e-05
+  patience: 30
+  gated_multi_entropy_weight: 0.01
+  save_dir: /root/autodl-tmp/TwoTST/checkpoints_sw/finetune/sw_projection_fusion_gated_multi
+  weight_decay: 0.0001
+fusion:
+  gated_multi:
+    output_dim: 256
+    hidden_dim: 128
+    dropout: 0.1
+    init_favor_idx: 4
+  type: gated_multi
+  use_tst1: true
+  use_tst2: true
+logging:
+  log_dir: /root/autodl-tmp/TwoTST/logs_sw/sw_projection_fusion_gated_multi
+  tensorboard: true
+model:
+  tst1:
+    dim_feedforward: 2048
+    dropout: 0.1
+    emb_dim: 512
+    max_seq_len: 32
+    n_heads: 8
+    n_layers: 6
+    n_rois: 200
+  tst2:
+    d_model: 256
+    dim_feedforward: 512
+    dropout: 0.1
+    n_heads: 8
+    n_layers: 2
+    pcc_dim: 19900
+pretrain:
+  tst1:
+    checkpoint: /root/autodl-tmp/TwoTST/checkpoints_sw/tst1/tst1_best.pt
+  tst2:
+    checkpoint: /root/autodl-tmp/TwoTST/checkpoints_sw/tst2/tst2_best.pt
+  use_pretrained: true
+training:
+  device: cuda
+  num_workers: 4
+  seed: 42

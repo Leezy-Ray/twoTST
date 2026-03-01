@@ -74,16 +74,18 @@ class DualStreamModel(nn.Module):
         
         self.num_classes = num_classes
     
-    def forward(self, timeseries, pcc_vector, return_features=False):
+    def forward(self, timeseries, pcc_vector, return_features=False, return_attention=False):
         """
         Args:
             timeseries: 时间序列 (batch, T, n_rois)
             pcc_vector: PCC向量 (batch, pcc_dim)
             return_features: 是否返回中间特征
+            return_attention: 是否返回注意力权重
         
         Returns:
             logits: 分类logits (batch, num_classes)
             features (optional): 融合特征 (batch, fusion_dim)
+            attention_weights (optional): 注意力权重dict
         """
         # 获取TST1特征
         h_ts = self.transformer_ts(timeseries, mode='finetune')
@@ -92,14 +94,30 @@ class DualStreamModel(nn.Module):
         h_fc = self.transformer_fc(pcc_vector, mode='finetune')
         
         # 融合
-        fused = self.fusion(h_ts, h_fc)
+        if return_attention and hasattr(self.fusion, 'forward'):
+            # 检查fusion是否支持返回注意力
+            if 'return_attention' in self.fusion.forward.__code__.co_varnames:
+                fused, attention_weights = self.fusion(h_ts, h_fc, return_attention=True)
+            else:
+                fused = self.fusion(h_ts, h_fc)
+                attention_weights = None
+        else:
+            fused = self.fusion(h_ts, h_fc)
+            attention_weights = None
         
         # 分类
         logits = self.classifier(fused)
         
+        result = [logits]
         if return_features:
-            return logits, fused, h_ts, h_fc
-        return logits
+            result.extend([fused, h_ts, h_fc])
+        if return_attention and attention_weights is not None:
+            result.append(attention_weights)
+        
+        if len(result) == 1:
+            return result[0]
+        else:
+            return tuple(result)
     
     def get_features(self, timeseries, pcc_vector):
         """

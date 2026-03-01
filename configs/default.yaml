@@ -2,17 +2,32 @@
 
 # 数据配置
 data:
-  data_path: /root/workplace/exp/TwoTST/data/fmri.npy
-  processed_path: /root/workplace/exp/TwoTST/data/processed/processed_data.pkl
+  data_path: /root/autodl-tmp/TwoTST/data/fmri.npy
+  processed_path: /root/autodl-tmp/TwoTST/data/processed/processed_data.pkl
   n_rois: 200
   time_points: 100
   pcc_dim: 19900  # 200 * 199 / 2
-  
+
+  # 划分比例（train/val/test）
+  split_ratio:
+    train: 0.7
+    val: 0.1
+    test: 0.2
+
+  # 受试者级划分：同一受试者的所有窗口仅出现在单一 split，避免滑窗信息泄漏
+  use_subject_level_split: true
+
+  # 站点分层：使用 subject_indices 与 site_ids 进行 StratifiedGroupKFold
+  # fmri.npy 需包含 'site' 字段；processed_data.pkl 会保存 subject_indices、site_ids
+
   # 滑动窗口配置（可选）
   sliding_window:
     enabled: false
     window_size: 50
     stride: 25
+
+  # 受试者级评估（滑窗时）：prob_mean（概率均值）| majority_vote（多数投票）
+  subject_agg_strategy: prob_mean
 
 # TST1 (时序Transformer) 配置
 tst1:
@@ -42,7 +57,7 @@ pretrain:
     weight_decay: 1e-4
     mask_ratio: null  # null 表示随机选择 0.25 或 0.5
     save_every: 10
-    save_dir: /root/workplace/exp/TwoTST/checkpoints/tst1
+    save_dir: /root/autodl-tmp/TwoTST/checkpoints/tst1
   
   # TST2 预训练
   tst2:
@@ -52,7 +67,7 @@ pretrain:
     weight_decay: 1e-4
     mask_ratio: 0.15
     save_every: 10
-    save_dir: /root/workplace/exp/TwoTST/checkpoints/tst2
+    save_dir: /root/autodl-tmp/TwoTST/checkpoints/tst2
 
 # 对比学习配置（可选）
 contrastive:
@@ -83,11 +98,11 @@ finetune:
   weight_decay: 1e-4
   n_folds: 5
   patience: 20
-  save_dir: /root/workplace/exp/TwoTST/checkpoints/finetune
+  save_dir: /root/autodl-tmp/TwoTST/checkpoints/finetune
   
   # 预训练权重路径（可选）
-  tst1_checkpoint: null  # /root/workplace/exp/TwoTST/checkpoints/tst1/tst1_best.pt
-  tst2_checkpoint: null  # /root/workplace/exp/TwoTST/checkpoints/tst2/tst2_best.pt
+  tst1_checkpoint: null  # /root/autodl-tmp/TwoTST/checkpoints/tst1/tst1_best.pt
+  tst2_checkpoint: null  # /root/autodl-tmp/TwoTST/checkpoints/tst2/tst2_best.pt
 
 # 训练配置
 training:
@@ -98,6 +113,6 @@ training:
 
 # 日志配置
 logging:
-  log_dir: /root/workplace/exp/TwoTST/logs
+  log_dir: /root/autodl-tmp/TwoTST/logs
   tensorboard: true
   print_freq: 10

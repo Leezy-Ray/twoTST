@@ -101,11 +101,11 @@ MLP分类器
 
 ```bash
 # 运行单个实验
-python scripts/run_experiment.py --config configs/experiments/group7_projection_tst1_only.yaml
+python scripts/experiments/run_experiment.py --config configs/experiments/group7_projection_tst1_only.yaml
 
 # 运行所有投影头微调实验
 for config in configs/experiments/group7_projection_*.yaml; do
-    python scripts/run_experiment.py --config $config
+    python scripts/experiments/run_experiment.py --config $config
 done
 ```
 

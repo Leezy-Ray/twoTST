@@ -11,7 +11,7 @@ contrastive:
   temperature: 0.07
   weight_decay: 0.0001
 data:
-  data_path: /root/workplace/exp/TwoTST/data/processed_sw/processed_data.pkl
+  data_path: /root/autodl-tmp/TwoTST/data/processed_sw/processed_data.pkl
   sliding_window:
     enabled: true
     stride: 16
@@ -35,7 +35,7 @@ finetune:
   freeze_tst2: false
   lr: 5.0e-05
   patience: 20
-  save_dir: /root/workplace/exp/TwoTST/checkpoints_sw/finetune/sw_baseline_gated
+  save_dir: /root/autodl-tmp/TwoTST/checkpoints_sw/finetune/sw_baseline_gated
   weight_decay: 0.0001
 fusion:
   attention_pooling:
@@ -53,7 +53,7 @@ fusion:
   use_tst1: true
   use_tst2: true
 logging:
-  log_dir: /root/workplace/exp/TwoTST/logs_sw/sw_baseline_gated
+  log_dir: /root/autodl-tmp/TwoTST/logs_sw/sw_baseline_gated
   tensorboard: true
 model:
   tst1:
@@ -73,9 +73,9 @@ model:
     pcc_dim: 19900
 pretrain:
   tst1:
-    checkpoint: /root/workplace/exp/TwoTST/checkpoints_sw/tst1/tst1_best.pt
+    checkpoint: /root/autodl-tmp/TwoTST/checkpoints_sw/tst1/tst1_best.pt
   tst2:
-    checkpoint: /root/workplace/exp/TwoTST/checkpoints_sw/tst2/tst2_best.pt
+    checkpoint: /root/autodl-tmp/TwoTST/checkpoints_sw/tst2/tst2_best.pt
   use_pretrained: true
 training:
   device: cuda

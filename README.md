@@ -69,11 +69,22 @@ TwoTST/
 │   ├── contrastive.py           # 对比学习模块
 │   └── __init__.py
 │
-├── scripts/                      # 训练脚本
-│   ├── prepare_data.py          # 数据预处理
-│   ├── train_pretrain.py        # 预训练入口
-│   ├── train_finetune.py        # 微调入口
-│   └── start_tensorboard.sh     # TensorBoard启动脚本
+├── scripts/                      # 训练脚本（按功能分类）
+│   ├── data/                    # 数据准备
+│   │   ├── prepare_data.py      # 数据预处理
+│   │   └── extract_subjects.py  # 提取被试子集
+│   ├── train/                   # 训练
+│   │   ├── train_pretrain.py    # 预训练入口
+│   │   ├── train_finetune.py    # 微调入口
+│   │   └── generate_contrastive_checkpoints.py
+│   ├── experiments/             # 实验运行
+│   │   └── run_experiment.py    # 单实验运行
+│   ├── ablation/                # 消融实验
+│   ├── validation/              # 统计验证
+│   ├── analysis/                # 分析与可视化
+│   ├── utils/                   # 工具
+│   │   └── start_tensorboard.sh
+│   └── run_full_training_autodl.sh  # 完整训练流程入口
 │
 ├── utils/                        # 工具函数
 │   ├── data_loader.py           # 数据加载器
@@ -126,7 +137,7 @@ pip install -r requirements.txt
 
 ```bash
 # 运行数据预处理脚本
-python scripts/prepare_data.py \
+python scripts/data/prepare_data.py \
     --data_path /path/to/your/fmri.npy \
     --output_dir data/processed \
     --n_rois 200 \
@@ -137,12 +148,16 @@ python scripts/prepare_data.py \
 - ✅ 自动清洗ROI全零样本
 - ✅ 计算PCC（Pearson相关系数）上三角向量
 - ✅ 可选滑动窗口数据增强
-- ✅ 数据标准化和划分（训练/验证/测试）
+- ✅ 保存受试者与站点元信息（`subject_indices`、`site_ids`），用于受试者级划分与站点分层评估
 
 **输出数据格式**:
 - `timeseries`: `(n_samples, n_rois, time_points)` - 时间序列
 - `pcc_vectors`: `(n_samples, n_rois*(n_rois-1)/2)` - PCC上三角向量
 - `labels`: `(n_samples,)` - 标签 (0=ASD, 1=TC)
+- `subject_indices`: 每个样本对应的受试者索引，用于受试者级划分（避免滑窗信息泄漏）
+- `site_ids`: 每个样本对应的站点ID，用于站点分层K折
+
+**fmri.npy 格式要求**: 需包含 `timeseries`、`label` 和可选 `site` 字段。若含 `site`，则支持站点分层评估。
 
 ### 3. 预训练
 
@@ -151,7 +166,7 @@ python scripts/prepare_data.py \
 使用统一入口脚本进行顺序预训练：
 
 ```bash
-python scripts/train_pretrain.py \
+python scripts/train/train_pretrain.py \
     --data_path data/processed/processed_data.pkl \
     --pretrain_tst1 \
     --pretrain_tst2 \
@@ -207,7 +222,7 @@ python pretrain/pretrain_fc.py \
 加载预训练权重进行下游分类任务：
 
 ```bash
-python scripts/train_finetune.py \
+python scripts/train/train_finetune.py \
     --data_path data/processed/processed_data.pkl \
     --tst1_checkpoint checkpoints/tst1/tst1_best.pt \
     --tst2_checkpoint checkpoints/tst2/tst2_best.pt \
@@ -223,6 +238,20 @@ python scripts/train_finetune.py \
 - `--fusion_type`: 融合策略 (`concat`, `gated`, `cross_attention`, `bilinear`, `attention_pooling`)
 - `--n_folds`: 交叉验证折数（默认5折）
 - `--use_contrastive`: 是否在微调前进行对比学习对齐
+- `--use_subject_level_split`: 受试者级划分（默认开启，避免滑窗信息泄漏）
+- `--subject_agg_strategy`: 滑窗时受试者级汇总方式 (`prob_mean` | `majority_vote`)
+
+### 评估协议（避免信息泄漏）
+
+- **受试者级划分**: 同一受试者的所有窗口（滑窗产生）仅出现在 train/val/test 之一，使用 `StratifiedGroupKFold`
+- **LOSO 跨站点评估**: `--eval_protocol loso` 实现 Leave-One-Site-Out，评估跨站点泛化
+- **受试者级评估**: 滑窗场景下，测试集指标按受试者汇总（概率均值或多数投票），报告临床相关的受试者级 AUC/ACC
+- **统计报告**: 交叉验证输出 mean ± std 及 Bootstrap 95% 置信区间，结果文件含 PyTorch/CUDA/seed 等复现信息
+
+```bash
+# LOSO 评估（需数据含 site 字段）
+python scripts/train_finetune.py --eval_protocol loso --data_path data/processed_sw/processed_data.pkl ...
+```
 
 ### 5. TensorBoard可视化
 
@@ -230,7 +259,7 @@ python scripts/train_finetune.py \
 
 ```bash
 # 启动TensorBoard服务
-bash scripts/start_tensorboard.sh
+bash scripts/utils/start_tensorboard.sh
 
 # 或手动启动
 tensorboard --logdir=logs --port=6006 --host=0.0.0.0
@@ -366,7 +395,7 @@ A: 在微调脚本中指定checkpoint路径：
 
 A: 在数据预处理时启用：
 ```bash
-python scripts/prepare_data.py \
+python scripts/data/prepare_data.py \
     --use_sliding_window \
     --window_size 50 \
     --stride 25

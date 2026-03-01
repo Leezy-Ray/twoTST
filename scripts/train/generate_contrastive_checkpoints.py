@@ -11,7 +11,7 @@ import numpy as np
 import pickle
 from pathlib import Path
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(PROJECT_ROOT)
 
 from torch.utils.data import DataLoader, TensorDataset
@@ -204,34 +204,44 @@ def generate_checkpoint(data_path, tst1_ckpt, tst2_ckpt, save_path, is_sw=False)
 
 
 def main():
-    DATA_DISK = "/root/autodl-tmp/TwoTST"
-    
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--normal_data', default='/root/workplace/exp/TwoTST/data/processed/processed_data.pkl')
+    parser.add_argument('--sw_data', default='/root/workplace/exp/TwoTST/data/processed_sw/processed_data.pkl')
+    parser.add_argument('--normal_tst1', default='/root/workplace/exp/TwoTST/checkpoints/tst1/tst1_best.pt')
+    parser.add_argument('--normal_tst2', default='/root/workplace/exp/TwoTST/checkpoints/tst2/tst2_best.pt')
+    parser.add_argument('--sw_tst1', default='/root/workplace/exp/TwoTST/checkpoints_sw/tst1/tst1_best.pt')
+    parser.add_argument('--sw_tst2', default='/root/workplace/exp/TwoTST/checkpoints_sw/tst2/tst2_best.pt')
+    parser.add_argument('--normal_save', default='/root/autodl-tmp/TwoTST/checkpoints/contrastive_checkpoint.pt')
+    parser.add_argument('--sw_save', default='/root/autodl-tmp/TwoTST/checkpoints_sw/contrastive_checkpoint.pt')
+    args = parser.parse_args()
+
     # 生成非滑动窗口的checkpoint
     print("\n" + "="*60)
     print("Generating Non-Sliding Window Contrastive Checkpoint")
     print("="*60)
-    
+
     normal_ckpt = generate_checkpoint(
-        data_path="/root/workplace/exp/TwoTST/data/processed/processed_data.pkl",
-        tst1_ckpt="/root/workplace/exp/TwoTST/checkpoints/tst1/tst1_best.pt",
-        tst2_ckpt="/root/workplace/exp/TwoTST/checkpoints/tst2/tst2_best.pt",
-        save_path=f"{DATA_DISK}/checkpoints/contrastive_checkpoint.pt",
+        data_path=args.normal_data,
+        tst1_ckpt=args.normal_tst1,
+        tst2_ckpt=args.normal_tst2,
+        save_path=args.normal_save,
         is_sw=False
     )
-    
+
     # 生成滑动窗口的checkpoint
     print("\n" + "="*60)
     print("Generating Sliding Window Contrastive Checkpoint")
     print("="*60)
-    
+
     sw_ckpt = generate_checkpoint(
-        data_path="/root/workplace/exp/TwoTST/data/processed_sw/processed_data.pkl",
-        tst1_ckpt="/root/workplace/exp/TwoTST/checkpoints_sw/tst1/tst1_best.pt",
-        tst2_ckpt="/root/workplace/exp/TwoTST/checkpoints_sw/tst2/tst2_best.pt",
-        save_path=f"{DATA_DISK}/checkpoints_sw/contrastive_checkpoint.pt",
+        data_path=args.sw_data,
+        tst1_ckpt=args.sw_tst1,
+        tst2_ckpt=args.sw_tst2,
+        save_path=args.sw_save,
         is_sw=True
     )
-    
+
     print("\n" + "="*60)
     print("All checkpoints generated!")
     print(f"  Normal: {normal_ckpt}")

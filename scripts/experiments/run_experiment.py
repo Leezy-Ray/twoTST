@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 # 添加项目根目录到路径
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(PROJECT_ROOT)
 
 from torch.utils.data import DataLoader
@@ -34,49 +34,76 @@ def load_config(config_path):
 
 
 def load_data(config):
-    """加载数据"""
+    """加载数据。支持 truncate_timeseries_to 截断时间序列以适配 SW 预训练模型。"""
     data_path = config['data']['data_path']
     with open(data_path, 'rb') as f:
         data = pickle.load(f)
-    
+
     timeseries = data['timeseries']
     pcc_vectors = data['pcc_vectors']
     labels = data['labels']
-    
+    subject_indices = data.get('subject_indices')
+    site_ids = data.get('site_ids')
+
+    truncate_to = config['data'].get('truncate_timeseries_to')
+    if truncate_to is not None and timeseries.shape[1] > truncate_to:
+        timeseries = timeseries[:, :truncate_to, :].copy()
+        print(f"Truncated timeseries to {truncate_to} timepoints for pretrain compatibility")
+
     print(f"Loaded data: timeseries {timeseries.shape}, pcc {pcc_vectors.shape}")
-    return timeseries, pcc_vectors, labels
+    return timeseries, pcc_vectors, labels, subject_indices, site_ids
 
 
-def split_data(labels, config, seed=42):
-    """划分数据集"""
+def split_data(labels, config, seed=42, subject_indices=None, site_ids=None):
+    """划分数据集。若 subject_indices 存在则按受试者级划分，避免滑窗泄漏。"""
     split_ratio = config['data']['split_ratio']
-    indices = np.arange(len(labels))
-    
-    # 训练集 vs (验证集+测试集)
-    train_size = split_ratio['train']
-    train_idx, temp_idx = train_test_split(
-        indices, test_size=1-train_size, random_state=seed, stratify=labels
-    )
-    
-    # 验证集 vs 测试集
-    val_ratio = split_ratio['val'] / (split_ratio['val'] + split_ratio['test'])
-    val_test_labels = labels[temp_idx]
-    val_idx, test_idx = train_test_split(
-        temp_idx, test_size=1-val_ratio, random_state=seed, stratify=val_test_labels
-    )
-    
-    print(f"Data split - Train: {len(train_idx)}, Val: {len(val_idx)}, Test: {len(test_idx)}")
+    train_ratio = split_ratio['train']
+    val_ratio = split_ratio['val'] / (split_ratio['val'] + split_ratio['test'] + 1e-9)
+    test_ratio = split_ratio['test'] / (split_ratio['val'] + split_ratio['test'] + 1e-9)
+
+    if subject_indices is not None:
+        from utils.splitters import get_subject_level_train_val_test_split
+        sr = config['data']['split_ratio']
+        train_idx, val_idx, test_idx = get_subject_level_train_val_test_split(
+            labels, subject_indices, site_ids=site_ids,
+            train_ratio=sr['train'],
+            val_ratio=sr['val'],
+            test_ratio=sr['test'],
+            seed=seed,
+        )
+        print(f"Subject-level split - Train: {len(train_idx)}, Val: {len(val_idx)}, Test: {len(test_idx)}")
+    else:
+        indices = np.arange(len(labels))
+        train_size = split_ratio['train']
+        train_idx, temp_idx = train_test_split(
+            indices, test_size=1 - train_size, random_state=seed, stratify=labels
+        )
+        val_ratio_split = split_ratio['val'] / (split_ratio['val'] + split_ratio['test'])
+        val_test_labels = labels[temp_idx]
+        val_idx, test_idx = train_test_split(
+            temp_idx, test_size=1 - val_ratio_split, random_state=seed, stratify=val_test_labels
+        )
+        print(f"Data split - Train: {len(train_idx)}, Val: {len(val_idx)}, Test: {len(test_idx)}")
+
     return train_idx, val_idx, test_idx
 
 
 def load_pretrained_models(config, device):
-    """加载预训练模型"""
+    """加载预训练模型。当 use_pretrained=false 时，TST1/TST2 随机初始化，用于端到端训练对比实验。"""
     from models.transformer_ts import create_transformer_ts
     from models.transformer_fc import create_transformer_fc
     
     model_config = config.get('model', {})
     tst1_config = model_config.get('tst1', {}).copy()
     tst2_config = model_config.get('tst2', {}).copy()
+    
+    if not config['pretrain']['use_pretrained']:
+        # 无预训练：从 data 配置补充 n_rois, max_seq_len, pcc_dim
+        data_config = config.get('data', {})
+        tst1_config.setdefault('n_rois', data_config.get('n_rois', 200))
+        tst1_config.setdefault('max_seq_len', data_config.get('time_points', data_config.get('max_seq_len', 100)))
+        tst2_config.setdefault('pcc_dim', data_config.get('pcc_dim', 19900))
+        print("No pretrain: TST1 and TST2 will be randomly initialized (end-to-end training from scratch)")
     
     # 加载预训练权重并从checkpoint中获取配置
     if config['pretrain']['use_pretrained']:
@@ -224,6 +251,13 @@ def run_contrastive_learning(tst1, tst2, train_data, val_data, config, device, w
         val_dataset, batch_size=cont_config['batch_size'], shuffle=False
     )
     
+    def _alignment(z1, z2):
+        """正样本对平均余弦相似度 (表征对齐度, 越高越好)"""
+        z1 = torch.nn.functional.normalize(z1, p=2, dim=1)
+        z2 = torch.nn.functional.normalize(z2, p=2, dim=1)
+        return (z1 * z2).sum(dim=1).mean().item()
+
+    history = []
     for epoch in range(1, cont_config['epochs'] + 1):
         # Training
         tst1.train() if not cont_config['freeze_tst1'] else tst1.eval()
@@ -232,6 +266,8 @@ def run_contrastive_learning(tst1, tst2, train_data, val_data, config, device, w
         proj_head2.train()
         
         train_loss = 0
+        train_align_sum = 0
+        train_align_n = 0
         for ts_batch, pcc_batch in train_loader:
             ts_batch = ts_batch.to(device)
             pcc_batch = pcc_batch.to(device)
@@ -254,8 +290,12 @@ def run_contrastive_learning(tst1, tst2, train_data, val_data, config, device, w
             optimizer.step()
             
             train_loss += loss.item()
+            with torch.no_grad():
+                train_align_sum += _alignment(z1, z2) * z1.size(0)
+                train_align_n += z1.size(0)
         
         train_loss /= len(train_loader)
+        train_align = train_align_sum / max(train_align_n, 1)
         
         # Validation
         tst1.eval()
@@ -264,6 +304,8 @@ def run_contrastive_learning(tst1, tst2, train_data, val_data, config, device, w
         proj_head2.eval()
         
         val_loss = 0
+        val_align_sum = 0
+        val_align_n = 0
         with torch.no_grad():
             for ts_batch, pcc_batch in val_loader:
                 ts_batch = ts_batch.to(device)
@@ -276,15 +318,28 @@ def run_contrastive_learning(tst1, tst2, train_data, val_data, config, device, w
                 
                 loss = criterion(z1, z2)
                 val_loss += loss.item()
+                val_align_sum += _alignment(z1, z2) * z1.size(0)
+                val_align_n += z1.size(0)
         
         val_loss /= len(val_loader)
+        val_align = val_align_sum / max(val_align_n, 1)
+        
+        history.append({
+            'epoch': epoch,
+            'train_loss': train_loss,
+            'val_loss': val_loss,
+            'train_alignment': train_align,
+            'val_alignment': val_align,
+        })
         
         # Log
         writer.add_scalar('Contrastive/train_loss', train_loss, epoch)
         writer.add_scalar('Contrastive/val_loss', val_loss, epoch)
+        writer.add_scalar('Contrastive/train_alignment', train_align, epoch)
+        writer.add_scalar('Contrastive/val_alignment', val_align, epoch)
         
         if epoch % 10 == 0:
-            print(f"Contrastive Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
+            print(f"Contrastive Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, val_align={val_align:.4f}")
         
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -298,12 +353,17 @@ def run_contrastive_learning(tst1, tst2, train_data, val_data, config, device, w
                 'config': cont_config
             }
     
-    # 保存对比学习checkpoint
+    # 保存对比学习checkpoint 和 训练曲线历史
     save_dir = config['finetune']['save_dir']
-    contrastive_ckpt_path = os.path.join(save_dir, 'contrastive_checkpoint.pt')
     os.makedirs(save_dir, exist_ok=True)
+    contrastive_ckpt_path = os.path.join(save_dir, 'contrastive_checkpoint.pt')
     torch.save(best_state, contrastive_ckpt_path)
     print(f"Saved contrastive checkpoint to: {contrastive_ckpt_path}")
+    import json
+    history_path = os.path.join(save_dir, 'contrastive_history.json')
+    with open(history_path, 'w', encoding='utf-8') as f:
+        json.dump({'history': history, 'config': {k: v for k, v in cont_config.items() if k != 'load_checkpoint'}}, f, indent=2)
+    print(f"Saved contrastive history to: {history_path}")
     
     # 加载最佳状态
     if best_state is not None:
@@ -320,7 +380,7 @@ def create_fusion_model(config, tst1_dim, tst2_dim, device):
     """创建融合模型"""
     from models.fusion import (
         ConcatFusion, GatedFusion, CrossAttentionFusion,
-        BilinearFusion, AttentionPoolingFusion
+        BilinearFusion, AttentionPoolingFusion, GatedMultiFusion
     )
     
     fusion_config = config['fusion']
@@ -341,6 +401,15 @@ def create_fusion_model(config, tst1_dim, tst2_dim, device):
         fusion = BilinearFusion(tst1_dim, tst2_dim, fusion_config.get('bilinear', {}).get('output_dim', 256))
     elif fusion_type == 'attention_pooling':
         fusion = AttentionPoolingFusion(tst1_dim, tst2_dim, fusion_config.get('attention_pooling', {}).get('hidden_dim', 256))
+    elif fusion_type == 'gated_multi':
+        gm_config = fusion_config.get('gated_multi', {})
+        fusion = GatedMultiFusion(
+            tst1_dim, tst2_dim,
+            output_dim=gm_config.get('output_dim', 256),
+            hidden_dim=gm_config.get('hidden_dim', 128),
+            dropout=gm_config.get('dropout', 0.1),
+            init_favor_idx=gm_config.get('init_favor_idx', 4)
+        )
     else:
         raise ValueError(f"Unknown fusion type: {fusion_type}")
     
@@ -453,8 +522,9 @@ def create_classifier(input_dim, config, device):
     return torch.nn.Sequential(*layers).to(device)
 
 
-def run_finetune(model, train_data, val_data, test_data, config, device, writer):
-    """运行微调"""
+def run_finetune(model, train_data, val_data, test_data, config, device, writer,
+                 subject_indices=None, test_idx=None, subject_agg_strategy=None):
+    """运行微调。若 subject_indices 与 subject_agg_strategy 均提供，则按受试者级汇总测试指标。"""
     finetune_config = config['finetune']
     
     train_ts, train_pcc, train_labels = train_data
@@ -531,7 +601,15 @@ def run_finetune(model, train_data, val_data, test_data, config, device, writer)
             
             outputs = model(ts, pcc)
             loss = criterion(outputs, labels)
-            
+
+            # 熵正则：鼓励门控多策略融合集中选择，降低熵
+            entropy_weight = finetune_config.get('gated_multi_entropy_weight', 0.0)
+            if entropy_weight > 0 and hasattr(model, 'fusion') and hasattr(model.fusion, 'last_gate_weights'):
+                gw = model.fusion.last_gate_weights
+                if gw is not None:
+                    entropy = -torch.sum(gw * (gw + 1e-8).log(), dim=-1).mean()
+                    loss = loss + entropy_weight * entropy
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -599,6 +677,17 @@ def run_finetune(model, train_data, val_data, test_data, config, device, writer)
             test_probs.extend(probs.cpu().numpy())
             test_true.extend(labels.numpy())
     
+    # 受试者级汇总（滑窗场景）：若提供 subject_indices 与 subject_agg_strategy
+    if subject_indices is not None and test_idx is not None and subject_agg_strategy is not None:
+        from utils.metrics import aggregate_window_predictions_to_subject_level
+        test_true = np.array(test_true)
+        test_preds = np.array(test_preds)
+        test_probs = np.array(test_probs)
+        test_true, test_preds, test_probs = aggregate_window_predictions_to_subject_level(
+            test_true, test_preds, test_probs, test_idx, subject_indices, strategy=subject_agg_strategy
+        )
+        print(f"Subject-level aggregation ({subject_agg_strategy}): {len(test_true)} subjects")
+    
     # Calculate metrics
     test_auc = roc_auc_score(test_true, test_probs)
     test_acc = accuracy_score(test_true, test_preds)
@@ -654,10 +743,12 @@ def main(args):
     os.makedirs(save_dir, exist_ok=True)
     
     # 加载数据
-    timeseries, pcc_vectors, labels = load_data(config)
-    
-    # 划分数据
-    train_idx, val_idx, test_idx = split_data(labels, config, seed)
+    timeseries, pcc_vectors, labels, subject_indices, site_ids = load_data(config)
+
+    # 划分数据（受试者级划分以避免滑窗泄漏）
+    train_idx, val_idx, test_idx = split_data(
+        labels, config, seed, subject_indices=subject_indices, site_ids=site_ids
+    )
     
     train_data = (timeseries[train_idx], pcc_vectors[train_idx], labels[train_idx])
     val_data = (timeseries[val_idx], pcc_vectors[val_idx], labels[val_idx])
@@ -685,14 +776,20 @@ def main(args):
                 tst1, tst2, train_data, val_data, config, device, writer
             )
         
-        # 冻结投影头参数（在微调阶段不再更新）
+        if getattr(args, 'contrastive_only', False):
+            writer.close()
+            print("Contrastive-only mode: saved history, exiting.")
+            return None
+        
+        # 投影头：默认冻结，可通过 finetune.freeze_projection=false 解冻
+        freeze_proj = config.get('finetune', {}).get('freeze_projection', True)
         if proj_head1 is not None:
             for param in proj_head1.parameters():
-                param.requires_grad = False
+                param.requires_grad = not freeze_proj
         if proj_head2 is not None:
             for param in proj_head2.parameters():
-                param.requires_grad = False
-        print("Projection heads frozen for finetuning")
+                param.requires_grad = not freeze_proj
+        print("Projection heads frozen for finetuning" if freeze_proj else "Projection heads trainable for finetuning")
     
     # 检查是否使用投影头微调
     finetune_config = config['finetune']
@@ -729,6 +826,8 @@ def main(args):
                 classifier_input_dim = fusion_config.get('bilinear', {}).get('output_dim', 256)
             elif fusion_config['type'] == 'attention_pooling':
                 classifier_input_dim = proj_output_dim
+            elif fusion_config['type'] == 'gated_multi':
+                classifier_input_dim = fusion_config.get('gated_multi', {}).get('output_dim', 256)
             else:
                 classifier_input_dim = proj_output_dim
         else:
@@ -761,6 +860,8 @@ def main(args):
             elif fusion_config['type'] == 'attention_pooling':
                 # AttentionPooling的输出维度是max(dim_ts, dim_fc)
                 classifier_input_dim = max(tst1_dim, tst2_dim)
+            elif fusion_config['type'] == 'gated_multi':
+                classifier_input_dim = fusion_config.get('gated_multi', {}).get('output_dim', 256)
             else:
                 classifier_input_dim = tst1_dim
         else:
@@ -774,9 +875,11 @@ def main(args):
         model = FinetuneModel(tst1, tst2, fusion, classifier, use_tst1, use_tst2)
     
     # 微调
+    subject_agg = getattr(args, 'subject_agg_strategy', None)
     print("\n--- Running Finetuning ---")
     results, model = run_finetune(
-        model, train_data, val_data, test_data, config, device, writer
+        model, train_data, val_data, test_data, config, device, writer,
+        subject_indices=subject_indices, test_idx=test_idx, subject_agg_strategy=subject_agg
     )
     
     # 打印结果
@@ -791,9 +894,11 @@ def main(args):
     print(f"Best Val AUC:     {results['best_val_auc']:.4f}")
     print(f"{'='*60}\n")
     
-    # 保存结果
+    # 保存结果（含复现信息）
+    from utils.metrics import get_reproducibility_info
     results['experiment'] = exp_name
     results['config'] = config
+    results['reproducibility'] = {**get_reproducibility_info(), 'seed': seed}
     results_path = os.path.join(save_dir, 'results.json')
     with open(results_path, 'w') as f:
         json.dump(results, f, indent=2, default=str)
@@ -817,6 +922,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run TwoTST experiment')
     parser.add_argument('--config', type=str, required=True,
                         help='Path to experiment config file')
+    parser.add_argument('--subject_agg_strategy', type=str, default=None,
+                        choices=['prob_mean', 'majority_vote'],
+                        help='Subject-level aggregation for sliding window: prob_mean or majority_vote')
+    parser.add_argument('--contrastive_only', action='store_true',
+                        help='Run contrastive learning only, save history and exit (for curve plotting)')
     args = parser.parse_args()
     
     main(args)

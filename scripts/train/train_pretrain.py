@@ -11,7 +11,7 @@ import torch
 import numpy as np
 
 # 添加项目根目录到路径
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from pretrain.pretrain_ts import pretrain_transformer_ts, PretrainTSDataset
 from pretrain.pretrain_fc import pretrain_transformer_fc, PretrainFCDataset
@@ -46,29 +46,34 @@ def main(args):
     print("Loading data...")
     with open(args.data_path, 'rb') as f:
         data = pickle.load(f)
-    
+
     timeseries = data['timeseries']
     pcc_vectors = data['pcc_vectors']
     labels = data['labels']
-    
+    subject_indices = data.get('subject_indices')
+    site_ids = data.get('site_ids')
+
     print(f"Timeseries shape: {timeseries.shape}")
     print(f"PCC vectors shape: {pcc_vectors.shape}")
-    
-    # 7:1:2划分数据集
-    indices = np.arange(len(labels))
-    
-    # 第一次划分：训练集 vs (验证集+测试集)
-    train_idx, temp_idx = train_test_split(
-        indices, test_size=0.3, random_state=args.seed, stratify=labels
-    )
-    
-    # 第二次划分：验证集 vs 测试集
-    val_test_labels = labels[temp_idx]
-    val_idx, test_idx = train_test_split(
-        temp_idx, test_size=2/3, random_state=args.seed, stratify=val_test_labels
-    )
-    
-    print(f"Data split - Train: {len(train_idx)}, Val: {len(val_idx)}, Test: {len(test_idx)}")
+
+    # 受试者级划分：预训练仅在训练被试上进行，避免测试集信息泄漏
+    if subject_indices is not None:
+        from utils.splitters import get_subject_level_train_val_test_split
+        train_idx, val_idx, test_idx = get_subject_level_train_val_test_split(
+            labels, subject_indices, site_ids=site_ids,
+            train_ratio=0.7, val_ratio=0.1, test_ratio=0.2, seed=args.seed
+        )
+        print(f"Subject-level split (pre-training uses train only) - Train: {len(train_idx)}, Val: {len(val_idx)}, Test: {len(test_idx)}")
+    else:
+        indices = np.arange(len(labels))
+        train_idx, temp_idx = train_test_split(
+            indices, test_size=0.3, random_state=args.seed, stratify=labels
+        )
+        val_test_labels = labels[temp_idx]
+        val_idx, test_idx = train_test_split(
+            temp_idx, test_size=2/3, random_state=args.seed, stratify=val_test_labels
+        )
+        print(f"Data split - Train: {len(train_idx)}, Val: {len(val_idx)}, Test: {len(test_idx)}")
     
     # Phase 1: TST1 预训练
     if args.pretrain_tst1:

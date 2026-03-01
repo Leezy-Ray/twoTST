@@ -7,7 +7,7 @@ experiment:
   group: "baseline"
 
 data:
-  data_path: /root/workplace/exp/TwoTST/data/processed/processed_data.pkl
+  data_path: /root/autodl-tmp/TwoTST/data/processed/processed_data.pkl
   n_rois: 200
   time_points: 100
   pcc_dim: 19900
@@ -21,9 +21,9 @@ data:
 pretrain:
   use_pretrained: true
   tst1:
-    checkpoint: /root/workplace/exp/TwoTST/checkpoints/tst1/tst1_best.pt
+    checkpoint: /root/autodl-tmp/TwoTST/checkpoints/tst1/tst1_best.pt
   tst2:
-    checkpoint: /root/workplace/exp/TwoTST/checkpoints/tst2/tst2_best.pt
+    checkpoint: /root/autodl-tmp/TwoTST/checkpoints/tst2/tst2_best.pt
 
 model:
   tst1:
@@ -63,7 +63,7 @@ finetune:
   classifier:
     hidden_dims: [256, 64]
     dropout: 0.3
-  save_dir: /root/workplace/exp/TwoTST/checkpoints/finetune/baseline_cross_attention
+  save_dir: /root/autodl-tmp/TwoTST/checkpoints/finetune/baseline_cross_attention
 
 training:
   device: cuda
@@ -71,7 +71,7 @@ training:
   num_workers: 4
 
 logging:
-  log_dir: /root/workplace/exp/TwoTST/logs/baseline_cross_attention
+  log_dir: /root/autodl-tmp/TwoTST/logs/baseline_cross_attention
   tensorboard: true
   save_best_only: true
 

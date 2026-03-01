@@ -3,7 +3,7 @@ experiment:
   description: 投影头微调：只用TST2+projection2+MLP
   group: projection
 data:
-  data_path: /root/workplace/exp/TwoTST/data/processed/processed_data.pkl
+  data_path: /root/autodl-tmp/TwoTST/data/processed/processed_data.pkl
   n_rois: 200
   time_points: 100
   pcc_dim: 19900
@@ -16,9 +16,9 @@ data:
 pretrain:
   use_pretrained: true
   tst1:
-    checkpoint: /root/workplace/exp/TwoTST/checkpoints/tst1/tst1_best.pt
+    checkpoint: /root/autodl-tmp/TwoTST/checkpoints/tst1/tst1_best.pt
   tst2:
-    checkpoint: /root/workplace/exp/TwoTST/checkpoints/tst2/tst2_best.pt
+    checkpoint: /root/autodl-tmp/TwoTST/checkpoints/tst2/tst2_best.pt
 model:
   tst1:
     emb_dim: 512

@@ -12,7 +12,7 @@ contrastive:
   weight_decay: 0.0001
   load_checkpoint: /root/autodl-tmp/TwoTST/checkpoints_sw/contrastive_checkpoint.pt
 data:
-  data_path: /root/workplace/exp/TwoTST/data/processed_sw/processed_data.pkl
+  data_path: /root/autodl-tmp/TwoTST/data/processed_sw/processed_data.pkl
   sliding_window:
     enabled: true
     stride: 16
@@ -75,9 +75,9 @@ model:
     pcc_dim: 19900
 pretrain:
   tst1:
-    checkpoint: /root/workplace/exp/TwoTST/checkpoints_sw/tst1/tst1_best.pt
+    checkpoint: /root/autodl-tmp/TwoTST/checkpoints_sw/tst1/tst1_best.pt
   tst2:
-    checkpoint: /root/workplace/exp/TwoTST/checkpoints_sw/tst2/tst2_best.pt
+    checkpoint: /root/autodl-tmp/TwoTST/checkpoints_sw/tst2/tst2_best.pt
   use_pretrained: true
 training:
   device: cuda

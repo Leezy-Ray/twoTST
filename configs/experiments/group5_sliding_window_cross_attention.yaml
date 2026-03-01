@@ -7,7 +7,7 @@ experiment:
   group: "augmentation"
 
 data:
-  data_path: /root/workplace/exp/TwoTST/data/processed/processed_data.pkl
+  data_path: /root/autodl-tmp/TwoTST/data/processed/processed_data.pkl
   n_rois: 200
   time_points: 100
   pcc_dim: 19900
@@ -76,7 +76,7 @@ finetune:
   classifier:
     hidden_dims: [256, 64]
     dropout: 0.3
-  save_dir: /root/workplace/exp/TwoTST/checkpoints/finetune/sliding_window_cross_attention
+  save_dir: /root/autodl-tmp/TwoTST/checkpoints/finetune/sliding_window_cross_attention
 
 training:
   device: cuda
@@ -84,7 +84,7 @@ training:
   num_workers: 4
 
 logging:
-  log_dir: /root/workplace/exp/TwoTST/logs/sliding_window_cross_attention
+  log_dir: /root/autodl-tmp/TwoTST/logs/sliding_window_cross_attention
   tensorboard: true
   save_best_only: true
 

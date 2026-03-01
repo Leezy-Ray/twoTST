@@ -11,7 +11,7 @@ import torch.nn as nn
 import numpy as np
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, confusion_matrix
@@ -19,11 +19,16 @@ from sklearn.metrics import (
 import pickle
 
 # 添加项目根目录到路径
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from models.dual_stream import DualStreamModel, create_dual_stream_model
 from pretrain.contrastive import ContrastiveWrapper
-from utils.data_loader import TwoTSTDataset
+from utils.data_loader import TwoTSTDataset, get_finetune_loaders
+from utils.metrics import (
+    aggregate_window_predictions_to_subject_level,
+    bootstrap_confidence_interval,
+    get_reproducibility_info,
+)
 
 
 def get_metrics(y_true, y_pred, y_prob=None):
@@ -159,7 +164,9 @@ def finetune_fold(
     weight_decay=1e-4,
     device='cuda',
     save_dir=None,
-    fold_idx=0
+    fold_idx=0,
+    split_info=None,
+    subject_agg_strategy='prob_mean',
 ):
     """
     单折微调训练
@@ -235,11 +242,40 @@ def finetune_fold(
     
     # 加载最佳模型
     model.load_state_dict(best_model_state)
-    
-    # 测试
-    test_loss, test_metrics = validate(model, test_loader, criterion, device)
-    
-    print(f"\nFold {fold_idx} Results:")
+
+    # 测试：收集窗口级预测
+    model.eval()
+    all_preds, all_labels, all_probs = [], [], []
+    with torch.no_grad():
+        for batch in test_loader:
+            timeseries = batch['timeseries'].to(device)
+            pcc_vector = batch['pcc_vector'].to(device)
+            labels = batch['label'].to(device)
+            logits = model(timeseries, pcc_vector)
+            probs = torch.softmax(logits, dim=1)[:, 1]
+            preds = torch.argmax(logits, dim=1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy())
+
+    # 受试者级汇总（滑窗时避免窗口级指标虚高）
+    if split_info and split_info.get('subject_indices') is not None and split_info.get('test_idx') is not None:
+        test_idx = split_info['test_idx']
+        subj_indices = split_info['subject_indices']
+        n_test_samples = len(test_idx)
+        n_test_subjects = len(np.unique(subj_indices[test_idx]))
+        if n_test_samples > n_test_subjects:  # 存在一个受试者多窗口
+            yt, yp, yprob = aggregate_window_predictions_to_subject_level(
+                all_labels, all_preds, all_probs, test_idx, subj_indices, strategy=subject_agg_strategy
+            )
+            test_metrics = get_metrics(yt, yp, yprob)
+            print(f"\nFold {fold_idx} Results (subject-level):")
+        else:
+            test_metrics = get_metrics(all_labels, all_preds, all_probs)
+            print(f"\nFold {fold_idx} Results (window-level):")
+    else:
+        test_metrics = get_metrics(all_labels, all_preds, all_probs)
+        print(f"\nFold {fold_idx} Results:")
     print(f"  Accuracy: {test_metrics['accuracy']:.4f}")
     print(f"  Precision: {test_metrics['precision']:.4f}")
     print(f"  Recall: {test_metrics['recall']:.4f}")
@@ -262,21 +298,36 @@ def main(args):
     # 设置设备
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
-    
-    # 加载数据
-    print("Loading data...")
+
+    # 确定折数：LOSO 时由站点数决定
     with open(args.data_path, 'rb') as f:
         data = pickle.load(f)
-    
+    n_folds = args.n_folds
+    if getattr(args, 'eval_protocol', 'kfold') == 'loso':
+        site_ids = data.get('site_ids')
+        if site_ids is not None:
+            n_folds = len(np.unique(site_ids))
+            print(f"LOSO: {n_folds} sites, {n_folds} folds")
+        else:
+            raise ValueError("LOSO requires site_ids in data; use --eval_protocol kfold for data without sites")
+
     timeseries = data['timeseries']
     pcc_vectors = data['pcc_vectors']
-    labels = data['labels']
-    
-    print(f"Timeseries shape: {timeseries.shape}")
-    print(f"PCC vectors shape: {pcc_vectors.shape}")
-    print(f"Labels distribution: {np.bincount(labels)}")
-    
-    # 模型配置
+
+    # 使用 get_finetune_loaders 实现受试者级 K 折或 LOSO
+    print("Loading data...")
+    train_loader, val_loader, test_loader, split_info = get_finetune_loaders(
+        args.data_path,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        n_folds=args.n_folds if getattr(args, 'eval_protocol', 'kfold') != 'loso' else n_folds,
+        fold_idx=0,
+        val_ratio=0.15,
+        seed=args.seed,
+        use_subject_level_split=getattr(args, 'use_subject_level_split', True),
+        eval_protocol=getattr(args, 'eval_protocol', 'kfold'),
+    )
+
     model_config = {
         'n_rois': timeseries.shape[2],
         'time_points': timeseries.shape[1],
@@ -287,49 +338,26 @@ def main(args):
         'num_classes': 2,
         'dropout': args.dropout
     }
-    
-    # K折交叉验证
-    kfold = StratifiedKFold(n_splits=args.n_folds, shuffle=True, random_state=args.seed)
-    
+
     all_metrics = []
-    
-    for fold_idx, (train_val_idx, test_idx) in enumerate(kfold.split(timeseries, labels)):
+
+    for fold_idx in range(n_folds):
         print(f"\n{'='*60}")
-        print(f"Fold {fold_idx + 1}/{args.n_folds}")
+        print(f"Fold {fold_idx + 1}/{n_folds}")
         print('='*60)
-        
-        # 划分训练集和验证集
-        train_idx, val_idx = train_test_split(
-            train_val_idx, test_size=0.15, random_state=args.seed,
-            stratify=labels[train_val_idx]
+
+        train_loader, val_loader, test_loader, split_info = get_finetune_loaders(
+            args.data_path,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            n_folds=args.n_folds if getattr(args, 'eval_protocol', 'kfold') != 'loso' else n_folds,
+            fold_idx=fold_idx,
+            val_ratio=0.15,
+            seed=args.seed,
+            use_subject_level_split=getattr(args, 'use_subject_level_split', True),
+            eval_protocol=getattr(args, 'eval_protocol', 'kfold'),
         )
-        
-        # 创建数据集
-        train_dataset = TwoTSTDataset(
-            timeseries[train_idx], pcc_vectors[train_idx], labels[train_idx]
-        )
-        val_dataset = TwoTSTDataset(
-            timeseries[val_idx], pcc_vectors[val_idx], labels[val_idx]
-        )
-        test_dataset = TwoTSTDataset(
-            timeseries[test_idx], pcc_vectors[test_idx], labels[test_idx]
-        )
-        
-        # 创建数据加载器
-        train_loader = DataLoader(
-            train_dataset, batch_size=args.batch_size, shuffle=True,
-            num_workers=args.num_workers, pin_memory=True, drop_last=True
-        )
-        val_loader = DataLoader(
-            val_dataset, batch_size=args.batch_size, shuffle=False,
-            num_workers=args.num_workers, pin_memory=True
-        )
-        test_loader = DataLoader(
-            test_dataset, batch_size=args.batch_size, shuffle=False,
-            num_workers=args.num_workers, pin_memory=True
-        )
-        
-        # 训练
+
         fold_metrics = finetune_fold(
             train_loader=train_loader,
             val_loader=val_loader,
@@ -344,34 +372,51 @@ def main(args):
             weight_decay=args.weight_decay,
             device=device,
             save_dir=args.save_dir,
-            fold_idx=fold_idx
+            fold_idx=fold_idx,
+            split_info=split_info,
+            subject_agg_strategy=getattr(args, 'subject_agg_strategy', 'prob_mean'),
         )
-        
+
         all_metrics.append(fold_metrics)
     
-    # 汇总结果
-    print(f"\n{'='*60}")
-    print("Cross-Validation Results:")
-    print('='*60)
-    
+    # 汇总结果（含 Bootstrap 95% CI）
     metric_names = ['accuracy', 'precision', 'recall', 'f1', 'auc']
+    print(f"\n{'='*60}")
+    print("Cross-Validation Results (mean ± std, 95% CI):")
+    print('='*60)
+
+    mean_metrics = {}
+    std_metrics = {}
+    ci_metrics = {}
+
     for metric in metric_names:
         values = [m.get(metric, 0) for m in all_metrics]
-        mean_val = np.mean(values)
-        std_val = np.std(values)
-        print(f"{metric.capitalize():12s}: {mean_val:.4f} ± {std_val:.4f}")
-    
-    # 保存结果
+        mean_val, std_val, lower, upper = bootstrap_confidence_interval(
+            values, n_bootstrap=1000, ci=0.95, seed=args.seed
+        )
+        mean_metrics[metric] = mean_val
+        std_metrics[metric] = std_val
+        ci_metrics[metric] = (lower, upper)
+        display_name = 'AUC' if metric == 'auc' else metric.capitalize()
+        print(f"{display_name:12s}: {mean_val:.4f} ± {std_val:.4f}  [{lower:.4f}, {upper:.4f}]")
+
+    # 保存结果（含复现信息）
     if args.save_dir:
+        repro_info = get_reproducibility_info()
+        repro_info['seed'] = args.seed
+        repro_info['n_folds'] = args.n_folds
+
         results = {
             'all_metrics': all_metrics,
-            'mean_metrics': {m: np.mean([x.get(m, 0) for x in all_metrics]) for m in metric_names},
-            'std_metrics': {m: np.std([x.get(m, 0) for x in all_metrics]) for m in metric_names},
+            'mean_metrics': mean_metrics,
+            'std_metrics': std_metrics,
+            'ci_95_metrics': ci_metrics,
             'config': model_config,
-            'args': vars(args)
+            'args': vars(args),
+            'reproducibility': repro_info,
         }
         with open(os.path.join(args.save_dir, 'results.pkl'), 'wb') as f:
-            pickle.dump(results, f)
+            pickle.dump(results, f, protocol=4)
 
 
 if __name__ == '__main__':
@@ -406,6 +451,18 @@ if __name__ == '__main__':
     parser.add_argument('--weight_decay', type=float, default=1e-4)
     parser.add_argument('--n_folds', type=int, default=5)
     
+    # 划分与评估
+    parser.add_argument('--use_subject_level_split', action='store_true', default=True,
+                        help='Use subject-level split to avoid data leakage (default: True)')
+    parser.add_argument('--no_subject_level_split', action='store_false', dest='use_subject_level_split',
+                        help='Disable subject-level split')
+    parser.add_argument('--eval_protocol', type=str, default='kfold',
+                        choices=['kfold', 'loso'],
+                        help='kfold: 5-fold CV | loso: Leave-One-Site-Out for cross-site generalization')
+    parser.add_argument('--subject_agg_strategy', type=str, default='prob_mean',
+                        choices=['prob_mean', 'majority_vote'],
+                        help='Subject-level aggregation for sliding window: prob_mean or majority_vote')
+
     # 其他参数
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--seed', type=int, default=42)

@@ -153,14 +153,16 @@ class CrossAttentionFusion(nn.Module):
         
         self.output_dim = self.d_model
     
-    def forward(self, h_ts, h_fc):
+    def forward(self, h_ts, h_fc, return_attention=False):
         """
         Args:
             h_ts: TST1特征 (batch, dim_ts)
             h_fc: TST2特征 (batch, dim_fc)
+            return_attention: 是否返回注意力权重
         
         Returns:
             fused: 融合后的特征 (batch, d_model)
+            attention_weights (optional): 注意力权重dict
         """
         # 投影到相同维度并添加序列维度
         h_ts = self.proj_ts(h_ts).unsqueeze(1)  # (batch, 1, d_model)
@@ -168,11 +170,11 @@ class CrossAttentionFusion(nn.Module):
         
         # 交叉注意力
         # TS作为Query，FC作为Key/Value
-        attn_ts, _ = self.cross_attn_ts2fc(h_ts, h_fc, h_fc)
+        attn_ts, attn_weights_ts2fc = self.cross_attn_ts2fc(h_ts, h_fc, h_fc)
         h_ts = self.norm1(h_ts + attn_ts)
         
         # FC作为Query，TS作为Key/Value
-        attn_fc, _ = self.cross_attn_fc2ts(h_fc, h_ts, h_ts)
+        attn_fc, attn_weights_fc2ts = self.cross_attn_fc2ts(h_fc, h_ts, h_ts)
         h_fc = self.norm2(h_fc + attn_fc)
         
         # 拼接并通过前馈网络
@@ -180,7 +182,16 @@ class CrossAttentionFusion(nn.Module):
         fused = self.ffn(concat)  # (batch, 1, d_model)
         fused = self.norm3(fused)
         
-        return fused.squeeze(1)  # (batch, d_model)
+        fused_out = fused.squeeze(1)  # (batch, d_model)
+        
+        if return_attention:
+            attention_weights = {
+                'ts2fc': attn_weights_ts2fc,  # (batch, n_heads, 1, 1)
+                'fc2ts': attn_weights_fc2ts   # (batch, n_heads, 1, 1)
+            }
+            return fused_out, attention_weights
+        else:
+            return fused_out
 
 
 class BilinearFusion(nn.Module):
@@ -288,6 +299,113 @@ class AttentionPoolingFusion(nn.Module):
         return fused
 
 
+class GatedMultiFusion(nn.Module):
+    """
+    门控多策略融合
+    并行运行5种融合策略(concat, gated, cross_attention, bilinear, attention_pooling)，
+    学习门控权重矩阵，灵活选择一种或多种策略进行融合。
+    改进：加深门控、初始化偏向 attention_pooling、存储 gate_weights 供熵正则。
+    """
+
+    def __init__(self, dim_ts, dim_fc, output_dim=256, hidden_dim=128, dropout=0.1,
+                 init_favor_idx=4):
+        """
+        Args:
+            dim_ts: TST1特征维度
+            dim_fc: TST2特征维度
+            output_dim: 最终融合输出维度
+            hidden_dim: 各融合策略内部隐藏维度
+            dropout: Dropout比例
+            init_favor_idx: 初始偏向的策略索引 (4=attention_pooling，单策略最优)
+        """
+        super().__init__()
+        self.dim_ts = dim_ts
+        self.dim_fc = dim_fc
+        self.output_dim = output_dim
+        self.n_strategies = 5
+        self.init_favor_idx = init_favor_idx
+        self.last_gate_weights = None  # 供熵正则使用
+
+        # 5种融合策略
+        self.fusions = nn.ModuleList([
+            ConcatFusion(dim_ts, dim_fc, output_dim=hidden_dim),
+            GatedFusion(dim_ts, dim_fc, hidden_dim=hidden_dim),
+            CrossAttentionFusion(dim_ts, dim_fc, n_heads=8, dropout=dropout),
+            BilinearFusion(dim_ts, dim_fc, output_dim=hidden_dim),
+            AttentionPoolingFusion(dim_ts, dim_fc, hidden_dim=hidden_dim),
+        ])
+
+        # 各融合输出维度可能不同，统一投影到 output_dim
+        fusion_dims = [
+            hidden_dim,  # concat
+            max(dim_ts, dim_fc),  # gated
+            max(dim_ts, dim_fc),  # cross_attention
+            hidden_dim,  # bilinear
+            max(dim_ts, dim_fc),  # attention_pooling
+        ]
+        self.projections = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(d, output_dim),
+                nn.LayerNorm(output_dim),
+                nn.GELU(),
+            )
+            for d in fusion_dims
+        ])
+
+        # 加深的门控网络
+        self.gate_net = nn.Sequential(
+            nn.Linear(dim_ts + dim_fc, hidden_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, self.n_strategies),
+        )
+        self._init_gate_favor_strategy()
+
+    def _init_gate_favor_strategy(self):
+        """初始化门控：使 init_favor_idx 策略（如 attention_pooling）初始权重更高"""
+        last_linear = self.gate_net[-1]
+        with torch.no_grad():
+            last_linear.weight.data *= 0.1
+            bias = torch.zeros(self.n_strategies)
+            bias[self.init_favor_idx] = 2.0
+            last_linear.bias.data.copy_(bias)
+
+    def forward(self, h_ts, h_fc):
+        """
+        Args:
+            h_ts: TST1特征 (batch, dim_ts)
+            h_fc: TST2特征 (batch, dim_fc)
+
+        Returns:
+            fused: 融合后的特征 (batch, output_dim)
+        """
+        # 并行计算5种融合输出
+        fusion_outputs = []
+        for i, fusion in enumerate(self.fusions):
+            out = fusion(h_ts, h_fc)
+            out = self.projections[i](out)
+            fusion_outputs.append(out)
+
+        # stack: (batch, 5, output_dim)
+        stacked = torch.stack(fusion_outputs, dim=1)
+
+        # 门控权重: (batch, 5)
+        gate_input = torch.cat([h_ts, h_fc], dim=-1)
+        gate_logits = self.gate_net(gate_input)
+        gate_weights = F.softmax(gate_logits, dim=-1)
+        self.last_gate_weights = gate_weights  # 供熵正则使用
+
+        # 加权求和: (batch, 5, output_dim) * (batch, 5, 1) -> (batch, output_dim)
+        fused = (stacked * gate_weights.unsqueeze(-1)).sum(dim=1)
+
+        return fused
+
+
 def create_fusion_module(fusion_type, dim_ts, dim_fc, **kwargs):
     """
     创建融合模块的工厂函数
@@ -306,7 +424,8 @@ def create_fusion_module(fusion_type, dim_ts, dim_fc, **kwargs):
         'gated': GatedFusion,
         'cross_attention': CrossAttentionFusion,
         'bilinear': BilinearFusion,
-        'attention_pooling': AttentionPoolingFusion
+        'attention_pooling': AttentionPoolingFusion,
+        'gated_multi': GatedMultiFusion,
     }
     
     if fusion_type not in fusion_classes:

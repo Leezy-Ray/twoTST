@@ -29,7 +29,7 @@ for config in "${configs_normal[@]}"; do
     name=$(basename $config .yaml)
     echo ""
     echo ">>> Running: $name"
-    python scripts/run_experiment.py --config "$config" 2>&1 | tee "$LOG_DIR/${name}.log"
+    python scripts/experiments/run_experiment.py --config "$config" 2>&1 | tee "$LOG_DIR/${name}.log"
     echo ">>> Completed: $name"
     echo "---"
 done
@@ -51,7 +51,7 @@ for config in "${configs_sw[@]}"; do
     name=$(basename $config .yaml)
     echo ""
     echo ">>> Running: $name"
-    python scripts/run_experiment.py --config "$config" 2>&1 | tee "$LOG_DIR/${name}.log"
+    python scripts/experiments/run_experiment.py --config "$config" 2>&1 | tee "$LOG_DIR/${name}.log"
     echo ">>> Completed: $name"
     echo "---"
 done

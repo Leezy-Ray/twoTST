@@ -13,7 +13,7 @@ experiment:
 # 数据配置
 # ============================================================
 data:
-  data_path: /root/workplace/exp/TwoTST/data/processed/processed_data.pkl
+  data_path: /root/autodl-tmp/TwoTST/data/processed/processed_data.pkl
   n_rois: 200
   time_points: 100
   pcc_dim: 19900
@@ -40,7 +40,7 @@ pretrain:
   # TST1 (时序Transformer)
   tst1:
     enabled: true
-    checkpoint: /root/workplace/exp/TwoTST/checkpoints/tst1/tst1_best.pt
+    checkpoint: /root/autodl-tmp/TwoTST/checkpoints/tst1/tst1_best.pt
     epochs: 100
     batch_size: 32
     lr: 1e-4
@@ -50,7 +50,7 @@ pretrain:
   # TST2 (连接Transformer)
   tst2:
     enabled: true
-    checkpoint: /root/workplace/exp/TwoTST/checkpoints/tst2/tst2_best.pt
+    checkpoint: /root/autodl-tmp/TwoTST/checkpoints/tst2/tst2_best.pt
     epochs: 100
     batch_size: 32
     lr: 1e-4
@@ -168,7 +168,7 @@ finetune:
     dropout: 0.3
   
   # 保存路径
-  save_dir: /root/workplace/exp/TwoTST/checkpoints/finetune
+  save_dir: /root/autodl-tmp/TwoTST/checkpoints/finetune
 
 # ============================================================
 # 训练配置
@@ -183,7 +183,7 @@ training:
 # 日志配置
 # ============================================================
 logging:
-  log_dir: /root/workplace/exp/TwoTST/logs
+  log_dir: /root/autodl-tmp/TwoTST/logs
   tensorboard: true
   print_freq: 10
   save_best_only: true
