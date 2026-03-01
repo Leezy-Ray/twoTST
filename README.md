@@ -1,430 +1,342 @@
-# TwoTST: 双流自监督预训练框架
+# TwoTST: Dual-Stream Self-Supervised Pretraining for ASD Diagnosis
 
-[![GitHub](https://img.shields.io/badge/GitHub-Leezy--Ray/twoTST-blue)](https://github.com/Leezy-Ray/twoTST.git)
+[![GitHub](https://img.shields.io/badge/GitHub-Leezy--Ray/twoTST-blue)](https://github.com/Leezy-Ray/twoTST)
+[![Python](https://img.shields.io/badge/Python-3.8%2B-green)](https://python.org)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-orange)](https://pytorch.org)
 
-TwoTST (Dual-Stream Self-Supervised Pretraining Framework) 是一个用于fMRI数据分析的双流Transformer框架，融合了时序Transformer和连接Transformer的优点，通过自监督预训练和对比学习提升ASD分类性能。
+**TwoTST** is a dual-stream self-supervised pretraining framework for fMRI-based autism spectrum disorder (ASD) diagnosis. It fuses temporal dynamics (BOLD time series) and functional connectivity (PCC matrix) via two independent Transformer encoders, contrastive learning alignment, and flexible fusion modules.
 
-## 📋 项目概述
+---
 
-TwoTST框架包含两个独立的Transformer分支：
+## Overview
 
-- **TST1 (Transformer-TS)**: 处理原始fMRI时间序列，使用ROI-level掩码策略进行预训练
-- **TST2 (Transformer-FC)**: 处理PCC（Pearson相关系数）上三角向量，使用元素级掩码策略进行预训练
+TwoTST jointly models two complementary views of fMRI data:
 
-### 核心特性
+- **TST1 (Transformer-TS)**: encodes raw BOLD time series using an ROI-level masking pretraining strategy (~19M parameters, `emb_dim=512`, 6 layers)
+- **TST2 (Transformer-FC)**: encodes the upper-triangle PCC connectivity vector using element-level masking (~16M parameters, `d_model=256`, 2 layers)
 
-- ✅ 双流Transformer架构：分别处理时序和连接特征
-- ✅ 自监督预训练：两种不同的掩码策略适配不同数据类型
-- ✅ 顺序预训练：先TST1，后TST2，逐步学习表征
-- ✅ 可选对比学习：对齐两个分支的特征空间
-- ✅ 多种融合策略：支持5种特征融合方法
-- ✅ 5折交叉验证：稳健的模型评估
+After pretraining, an optional **contrastive learning** stage aligns the two representation spaces via InfoNCE loss. A **projection-based attention-pooling fusion** module then merges the two streams for downstream ASD/TC classification.
 
-## 🏗️ 架构设计
+### Best Configuration (AUC ≈ 0.744 single-split, AUC = 0.7043 ± 0.040 over 5 seeds)
+
+| Dimension | Choice |
+|-----------|--------|
+| Sliding window | Disabled |
+| Pretraining | Non-sliding-window TST1 + TST2 |
+| Contrastive learning | Enabled (freeze TST1, unfreeze TST2) |
+| Fusion | `attention_pooling` |
+| Finetuning | TST1 + TST2 unfrozen, projection head frozen |
+| Total parameters | ~36.5M |
+
+### LOSO Cross-site Generalization (19 sites, ABIDE I, subject-level majority_vote)
+
+| Metric | Mean ± Std | 95% CI |
+|--------|------------|--------|
+| AUC | 0.6897 ± 0.1358 | [0.6254, 0.7460] |
+| Accuracy | 0.6189 ± 0.1291 | [0.5586, 0.6790] |
+| Sensitivity | 0.6184 ± 0.1990 | — |
+| Specificity | 0.6293 ± 0.1929 | — |
+| F1 | 0.6141 ± 0.1508 | — |
+
+---
+
+## Training Pipeline
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     数据预处理                                │
-│  fmri.npy (N, T, R) → 清洗 → (N', T, R)                    │
-│  ↓                                                          │
-│  时间序列 (N', R, T)  +  PCC向量 (N', R*(R-1)/2)            │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│              Phase 1: TST1 预训练                            │
-│  时间序列 → ROI-level掩码 → Transformer-TS → 重建时序      │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│              Phase 2: TST2 预训练                            │
-│  PCC向量 → 元素级掩码 → Transformer-FC → 重建PCC          │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│         Phase 3: 对比学习（可选）                            │
-│  TST1特征 + TST2特征 → InfoNCE损失 → 特征对齐              │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│              Phase 4: 微调分类                                │
-│  融合特征 → MLP分类器 → ASD/TC预测                         │
-└─────────────────────────────────────────────────────────────┘
+fMRI Data (N × T × R)
+        │
+        ▼
+┌───────────────────────┐
+│  Phase 1: Pretrain    │
+│  TST1  (time series)  │  ROI-level mask → reconstruction
+│  TST2  (PCC vector)   │  element-level mask → reconstruction
+└───────────────────────┘
+        │
+        ▼
+┌───────────────────────┐
+│  Phase 2: Contrastive │  InfoNCE, projection heads
+│  (optional)           │  aligns TST1 & TST2 embedding spaces
+└───────────────────────┘
+        │
+        ▼
+┌───────────────────────┐
+│  Phase 3: Finetune    │  projection + attention_pooling fusion
+│  ASD / TC             │  → MLP classifier → AUC / ACC / F1
+└───────────────────────┘
 ```
 
-## 📁 项目结构
+---
+
+## Project Structure
 
 ```
 TwoTST/
-├── models/                        # 模型定义
-│   ├── transformer_ts.py         # TST1: 时序Transformer
-│   ├── transformer_fc.py         # TST2: 连接Transformer
-│   ├── fusion.py                 # 融合模块（5种策略）
-│   ├── dual_stream.py            # 双流模型
-│   └── __init__.py               # 模型导出
-│
-├── pretrain/                     # 预训练模块
-│   ├── mask_utils.py            # 掩码策略工具
-│   ├── pretrain_ts.py           # TST1预训练脚本
-│   ├── pretrain_fc.py           # TST2预训练脚本
-│   ├── contrastive.py           # 对比学习模块
+├── models/                          # Model definitions
+│   ├── transformer_ts.py            # TST1: time-series Transformer
+│   ├── transformer_fc.py            # TST2: connectivity Transformer
+│   ├── fusion.py                    # 5 fusion strategies
+│   ├── dual_stream.py               # DualStreamModel wrapper
 │   └── __init__.py
 │
-├── scripts/                      # 训练脚本（按功能分类）
-│   ├── data/                    # 数据准备
-│   │   ├── prepare_data.py      # 数据预处理
-│   │   └── extract_subjects.py  # 提取被试子集
-│   ├── train/                   # 训练
-│   │   ├── train_pretrain.py    # 预训练入口
-│   │   ├── train_finetune.py    # 微调入口
+├── pretrain/                        # Pretraining modules
+│   ├── pretrain_ts.py               # TST1 pretraining
+│   ├── pretrain_fc.py               # TST2 pretraining
+│   ├── contrastive.py               # InfoNCE contrastive learning
+│   ├── mask_utils.py                # Masking strategies
+│   └── __init__.py
+│
+├── scripts/
+│   ├── train/
+│   │   ├── train_pretrain.py        # Unified pretraining entry
+│   │   ├── train_finetune.py        # Finetuning entry (k-fold / LOSO)
 │   │   └── generate_contrastive_checkpoints.py
-│   ├── experiments/             # 实验运行
-│   │   └── run_experiment.py    # 单实验运行
-│   ├── ablation/                # 消融实验
-│   ├── validation/              # 统计验证
-│   ├── analysis/                # 分析与可视化
-│   ├── utils/                   # 工具
-│   │   └── start_tensorboard.sh
-│   └── run_full_training_autodl.sh  # 完整训练流程入口
+│   ├── experiments/
+│   │   └── run_experiment.py        # Single-config experiment runner
+│   ├── ablation/                    # Ablation study scripts
+│   │   ├── run_ablation_no_pretrain.py
+│   │   ├── run_ablation_baseline_and_freeze.py
+│   │   └── run_ablation_contrastive_freeze.py
+│   ├── analysis/                    # Visualization & interpretability
+│   │   ├── interpretability_gradients.py   # Gradient-based importance
+│   │   ├── plot_interpretability.py        # Heatmap / bar plots
+│   │   ├── plot_pretrain_loss_v3.py
+│   │   ├── plot_fusion_comparison.py
+│   │   └── analyze_attention.py
+│   ├── validation/
+│   │   └── collect_statistical_results.py
+│   ├── data/
+│   │   └── prepare_data.py
+│   ├── run_best_config_5fold_loso.py   # Best config: 5-fold CV + LOSO
+│   ├── run_best_config_5fold_loso.sh
+│   ├── run_best_config_5x.py           # Best config: 5-seed repeatability
+│   ├── run_fusion_5x.py                # Fusion ablation × 5 seeds
+│   ├── run_statistical_validation.sh   # Full statistical validation
+│   ├── run_ablation_*.sh
+│   └── run_full_training_autodl.sh     # One-shot full training entry
 │
-├── utils/                        # 工具函数
-│   ├── data_loader.py           # 数据加载器
-│   ├── metrics.py               # 评估指标
+├── utils/
+│   ├── data_loader.py               # Dataset & DataLoader
+│   ├── metrics.py                   # AUC, ACC, bootstrap CI
+│   ├── splitters.py                 # Subject-level k-fold & LOSO splits
 │   └── __init__.py
 │
-├── configs/                      # 配置文件
-│   ├── default.yaml             # 默认配置
-│   └── base_template.yaml       # 配置模板
+├── configs/
+│   ├── experiments/                 # Per-experiment YAML configs
+│   │   └── group7_projection_fusion_attention_pooling.yaml  # best config
+│   └── default.yaml
 │
-├── requirements.txt             # 依赖包
-└── README.md                    # 本文档
+├── api/                             # REST API for model serving
+│   ├── app.py
+│   ├── models/
+│   ├── services/
+│   └── utils/
+│
+├── docs/                            # Experiment docs & analysis
+│   ├── OPTIMAL_CONFIGURATION.md
+│   ├── STATISTICAL_VALIDATION_RESULTS.md
+│   ├── ABLATION_RESULTS.md
+│   ├── INTERPRETABILITY_RESULTS_SUMMARY.md
+│   └── ...
+│
+├── requirements.txt
+└── README.md
 ```
 
-**注意**: 训练过程中会生成以下目录（建议添加到 `.gitignore`）：
-- `checkpoints/` - 模型检查点
-- `logs/` - TensorBoard日志
-- `data/` - 数据文件
-- `results/` - 实验结果
+> **Note**: `data/`, `checkpoints/`, `logs/`, `results/` are excluded from git (see `.gitignore`). Place data on `/root/autodl-tmp/` on AutoDL instances.
 
-## 🚀 快速开始
+---
 
-### 1. 环境配置
+## Quick Start
 
-**系统要求**:
-- Python >= 3.7
-- CUDA >= 10.2 (GPU推荐)
-
-**安装依赖**:
+### 1. Environment Setup
 
 ```bash
-# 克隆仓库
 git clone https://github.com/Leezy-Ray/twoTST.git
 cd twoTST
-
-# 安装依赖
 pip install -r requirements.txt
 ```
 
-主要依赖包：
-- PyTorch >= 1.10.0
-- NumPy >= 1.20.0
-- scikit-learn >= 1.0.0
-- TensorBoard >= 2.8.0
-- tqdm, PyYAML
+Requirements: Python ≥ 3.8, PyTorch ≥ 2.0, CUDA ≥ 11.8 (recommended: RTX 4090).
 
-### 2. 数据准备
+### 2. Data Preparation
 
-准备您的fMRI数据，格式为 `(n_samples, time_points, n_rois)` 的numpy数组。
+Prepare `processed_data.pkl` from raw ABIDE fMRI data (CC200 atlas, 963 subjects):
 
 ```bash
-# 运行数据预处理脚本
 python scripts/data/prepare_data.py \
-    --data_path /path/to/your/fmri.npy \
+    --data_path /path/to/fmri.npy \
     --output_dir data/processed \
-    --n_rois 200 \
-    --time_points 100
+    --n_rois 200 --time_points 100
 ```
 
-**数据预处理功能**:
-- ✅ 自动清洗ROI全零样本
-- ✅ 计算PCC（Pearson相关系数）上三角向量
-- ✅ 可选滑动窗口数据增强
-- ✅ 保存受试者与站点元信息（`subject_indices`、`site_ids`），用于受试者级划分与站点分层评估
+Output fields in `processed_data.pkl`:
 
-**输出数据格式**:
-- `timeseries`: `(n_samples, n_rois, time_points)` - 时间序列
-- `pcc_vectors`: `(n_samples, n_rois*(n_rois-1)/2)` - PCC上三角向量
-- `labels`: `(n_samples,)` - 标签 (0=ASD, 1=TC)
-- `subject_indices`: 每个样本对应的受试者索引，用于受试者级划分（避免滑窗信息泄漏）
-- `site_ids`: 每个样本对应的站点ID，用于站点分层K折
+| Field | Shape | Description |
+|-------|-------|-------------|
+| `timeseries` | `(N, T, R)` | BOLD time series |
+| `pcc_vectors` | `(N, R*(R-1)/2)` | PCC upper-triangle |
+| `labels` | `(N,)` | 0=ASD, 1=TC |
+| `subject_indices` | `(N,)` | For subject-level split |
+| `site_ids` | `(N,)` | For LOSO evaluation |
 
-**fmri.npy 格式要求**: 需包含 `timeseries`、`label` 和可选 `site` 字段。若含 `site`，则支持站点分层评估。
-
-### 3. 预训练
-
-#### 方式1: 顺序预训练（推荐）
-
-使用统一入口脚本进行顺序预训练：
+### 3. Pretraining
 
 ```bash
+# Pretrain both TST1 and TST2 sequentially
 python scripts/train/train_pretrain.py \
     --data_path data/processed/processed_data.pkl \
-    --pretrain_tst1 \
-    --pretrain_tst2 \
-    --tst1_epochs 100 \
-    --tst2_epochs 100 \
-    --batch_size 32 \
-    --lr 1e-4 \
-    --save_dir checkpoints \
-    --log_dir logs
+    --pretrain_tst1 --pretrain_tst2 \
+    --tst1_epochs 100 --tst2_epochs 100 \
+    --batch_size 32 --lr 1e-4 \
+    --save_dir checkpoints
 ```
 
-#### 方式2: 单独预训练
-
-**TST1预训练（时序Transformer）**:
+Or run individually:
 
 ```bash
+# TST1: ROI-level masking on BOLD time series
 python pretrain/pretrain_ts.py \
     --data_path data/processed/processed_data.pkl \
-    --epochs 100 \
-    --batch_size 32 \
-    --lr 1e-4 \
-    --save_dir checkpoints/tst1 \
-    --log_dir logs/tst1
-```
+    --epochs 100 --save_dir checkpoints/tst1
 
-**TST1特点**:
-- 输入: `(batch, n_rois, time_points)` - 时间序列
-- 掩码策略: ROI-level掩码（随机掩码25%或50%的ROI整列）
-- 预训练任务: 重建被掩码ROI的完整时间序列
-- 模型参数: ~19M
-
-**TST2预训练（连接Transformer）**:
-
-```bash
+# TST2: element-level masking on PCC vector
 python pretrain/pretrain_fc.py \
     --data_path data/processed/processed_data.pkl \
-    --epochs 100 \
-    --batch_size 32 \
-    --lr 1e-4 \
-    --mask_ratio 0.15 \
-    --save_dir checkpoints/tst2 \
-    --log_dir logs/tst2
+    --epochs 100 --mask_ratio 0.15 --save_dir checkpoints/tst2
 ```
 
-**TST2特点**:
-- 输入: `(batch, pcc_dim)` - PCC上三角向量
-- 掩码策略: 元素级掩码（随机掩码15%的PCC值）
-- 预训练任务: 重建被掩码的PCC值
-- 模型参数: ~16M
+### 4. Finetuning (Best Config)
 
-### 4. 微调分类
+```bash
+python scripts/experiments/run_experiment.py \
+    --config configs/experiments/group7_projection_fusion_attention_pooling.yaml
+```
 
-加载预训练权重进行下游分类任务：
+Or with the general finetuning script:
 
 ```bash
 python scripts/train/train_finetune.py \
     --data_path data/processed/processed_data.pkl \
     --tst1_checkpoint checkpoints/tst1/tst1_best.pt \
     --tst2_checkpoint checkpoints/tst2/tst2_best.pt \
-    --fusion_type cross_attention \
-    --epochs 100 \
-    --batch_size 32 \
-    --lr 5e-5 \
-    --n_folds 5 \
-    --use_contrastive  # 可选：启用对比学习
+    --fusion_type attention_pooling \
+    --eval_protocol kfold --n_folds 5 \
+    --subject_agg_strategy majority_vote \
+    --save_dir results/best_config
 ```
 
-**微调参数说明**:
-- `--fusion_type`: 融合策略 (`concat`, `gated`, `cross_attention`, `bilinear`, `attention_pooling`)
-- `--n_folds`: 交叉验证折数（默认5折）
-- `--use_contrastive`: 是否在微调前进行对比学习对齐
-- `--use_subject_level_split`: 受试者级划分（默认开启，避免滑窗信息泄漏）
-- `--subject_agg_strategy`: 滑窗时受试者级汇总方式 (`prob_mean` | `majority_vote`)
-
-### 评估协议（避免信息泄漏）
-
-- **受试者级划分**: 同一受试者的所有窗口（滑窗产生）仅出现在 train/val/test 之一，使用 `StratifiedGroupKFold`
-- **LOSO 跨站点评估**: `--eval_protocol loso` 实现 Leave-One-Site-Out，评估跨站点泛化
-- **受试者级评估**: 滑窗场景下，测试集指标按受试者汇总（概率均值或多数投票），报告临床相关的受试者级 AUC/ACC
-- **统计报告**: 交叉验证输出 mean ± std 及 Bootstrap 95% 置信区间，结果文件含 PyTorch/CUDA/seed 等复现信息
+### 5. Statistical Validation (5-fold CV + LOSO)
 
 ```bash
-# LOSO 评估（需数据含 site 字段）
-python scripts/train_finetune.py --eval_protocol loso --data_path data/processed_sw/processed_data.pkl ...
+# Run best config over 5-fold CV and LOSO in one shot
+bash scripts/run_best_config_5fold_loso.sh
+
+# Or separately:
+python scripts/run_best_config_5fold_loso.py \
+    --config configs/experiments/group7_projection_fusion_attention_pooling.yaml \
+    --eval_protocol loso \
+    --subject_agg_strategy majority_vote \
+    --save_dir results/best_config_loso
 ```
 
-### 5. TensorBoard可视化
-
-训练过程中可以使用TensorBoard实时查看训练曲线：
+### 6. Interpretability Analysis
 
 ```bash
-# 启动TensorBoard服务
-bash scripts/utils/start_tensorboard.sh
+# Compute gradient-based connection & ROI importance
+python scripts/analysis/interpretability_gradients.py \
+    --data_path data/processed/processed_data.pkl \
+    --checkpoint checkpoints/finetune/projection_fusion_attention_pooling_unfrozen/best_model.pt \
+    --config configs/experiments/group7_projection_fusion_attention_pooling.yaml \
+    --output_dir results/interpretability \
+    --target_class 1 --max_samples 500
 
-# 或手动启动
-tensorboard --logdir=logs --port=6006 --host=0.0.0.0
+# Plot heatmaps and bar charts
+python scripts/analysis/plot_interpretability.py \
+    --result_dir results/interpretability \
+    --labels data/labels/cc200_coordinates.json \
+    --output_dir results/interpretability
 ```
-
-然后在浏览器中访问 `http://localhost:6006` 查看训练曲线。
-
-## 🔧 配置说明
-
-配置文件位于 `configs/default.yaml`，主要配置项：
-
-```yaml
-# 数据配置
-data:
-  n_rois: 200
-  time_points: 100
-  pcc_dim: 19900
-
-# TST1配置
-tst1:
-  emb_dim: 512
-  n_heads: 8
-  n_layers: 6
-  dim_feedforward: 2048
-
-# TST2配置
-tst2:
-  d_model: 256
-  n_heads: 8
-  n_layers: 2
-  dim_feedforward: 512
-
-# 融合配置
-fusion:
-  type: cross_attention  # concat/gated/cross_attention/bilinear/attention_pooling
-
-# 对比学习配置
-contrastive:
-  enabled: false
-  temperature: 0.07
-  epochs: 50
-```
-
-## 📊 融合策略
-
-框架支持5种融合策略：
-
-1. **ConcatFusion**: 简单拼接 `[h_ts; h_fc]`
-2. **GatedFusion**: 门控融合 `gate * h_ts + (1-gate) * h_fc`
-3. **CrossAttentionFusion**: 交叉注意力融合（推荐）
-4. **BilinearFusion**: 双线性融合
-5. **AttentionPoolingFusion**: 注意力池化融合
-
-## 📈 评估指标
-
-微调脚本会自动计算以下指标：
-
-- **Accuracy**: 准确率
-- **Precision**: 精确率
-- **Recall**: 召回率
-- **F1 Score**: F1分数
-- **AUC**: ROC曲线下面积
-- **Sensitivity/Specificity**: 敏感度/特异度
-
-输出示例：
-```
-Cross-Validation Results:
-----------------------------------------
-Accuracy    : 0.7234 ± 0.0234
-Precision   : 0.7123 ± 0.0198
-Recall      : 0.7345 ± 0.0212
-F1          : 0.7231 ± 0.0201
-AUC         : 0.7891 ± 0.0156
-```
-
-## 📝 使用示例
-
-### Python API
-
-```python
-import torch
-from models import create_dual_stream_model
-from utils.data_loader import load_processed_data, TwoTSTDataset
-
-# 加载数据
-data = load_processed_data('data/processed/processed_data.pkl')
-dataset = TwoTSTDataset(
-    data['timeseries'],
-    data['pcc_vectors'],
-    data['labels']
-)
-
-# 创建模型
-model = create_dual_stream_model(
-    n_rois=200,
-    time_points=100,
-    pcc_dim=19900,
-    fusion_type='cross_attention'
-)
-
-# 加载预训练权重
-model.load_pretrained_tst1('checkpoints/tst1/tst1_best.pt')
-model.load_pretrained_tst2('checkpoints/tst2/tst2_best.pt')
-
-# 前向传播
-timeseries = torch.randn(8, 200, 100)
-pcc_vector = torch.randn(8, 19900)
-logits = model(timeseries, pcc_vector)
-```
-
-## 🐛 常见问题
-
-### Q1: 内存不足怎么办？
-
-A: 可以减小batch_size或使用梯度累积：
-```bash
---batch_size 16  # 减小batch size
-```
-
-### Q2: 如何只训练某个分支？
-
-A: 可以修改脚本，只加载并使用单个分支的预训练权重。
-
-### Q3: 预训练权重如何加载？
-
-A: 在微调脚本中指定checkpoint路径：
-```bash
---tst1_checkpoint checkpoints/tst1/tst1_best.pt
---tst2_checkpoint checkpoints/tst2/tst2_best.pt
-```
-
-### Q4: 如何使用滑动窗口数据增强？
-
-A: 在数据预处理时启用：
-```bash
-python scripts/data/prepare_data.py \
-    --use_sliding_window \
-    --window_size 50 \
-    --stride 25
-```
-
-## 📚 参考文献
-
-本项目参考了以下工作：
-- ROI-level掩码预训练时序Transformer
-- PCC上三角向量掩码预训练连接Transformer
-
-## 📄 许可证
-
-本项目仅供研究使用。
-
-## 👥 贡献
-
-欢迎提交Issue和Pull Request！
-
-如果您有任何问题或建议，请：
-1. 提交 [Issue](https://github.com/Leezy-Ray/twoTST/issues)
-2. 发起 [Pull Request](https://github.com/Leezy-Ray/twoTST/pulls)
-
-## 📧 联系方式
-
-如有问题，请提交Issue或联系项目维护者。
 
 ---
 
-**TwoTST** - Dual-Stream Self-Supervised Pretraining Framework for fMRI Analysis
+## Fusion Strategies
 
-**GitHub**: [https://github.com/Leezy-Ray/twoTST.git](https://github.com/Leezy-Ray/twoTST.git)
+| Strategy | Description |
+|----------|-------------|
+| `concat` | Concatenate `[h_ts; h_fc]` |
+| `gated` | Learnable gate: `g ⊙ h_ts + (1−g) ⊙ h_fc` |
+| `cross_attention` | Cross-attention between the two streams |
+| `bilinear` | Bilinear interaction |
+| `attention_pooling` | Attention-weighted pooling (**best**) |
+
+Fusion ablation results (5 seeds each, fixed best pretraining strategy):
+
+| Fusion | AUC | ACC |
+|--------|-----|-----|
+| attention_pooling | 0.7043 ± 0.040 | 0.6352 ± 0.030 |
+| gated | 0.7217 ± 0.045 | 0.6591 ± 0.027 |
+| cross_attention | 0.7094 ± 0.043 | 0.6601 ± 0.042 |
+| concat | 0.7132 ± 0.055 | 0.6497 ± 0.042 |
+| bilinear | 0.6002 ± 0.034 | 0.5782 ± 0.028 |
+
+---
+
+## Evaluation Protocol
+
+- **Subject-level split**: all windows from the same subject are placed in the same fold (`StratifiedGroupKFold`), preventing sliding-window data leakage.
+- **LOSO**: `--eval_protocol loso` performs Leave-One-Site-Out across 19 ABIDE sites.
+- **Subject-level aggregation**: test predictions are aggregated per subject via `majority_vote` or `prob_mean` before computing metrics.
+- **Statistical reporting**: CV outputs `mean ± std` and bootstrap 95% CI; `summary.json` includes reproducibility metadata (PyTorch/CUDA/seed).
+
+---
+
+## Ablation Summary
+
+| Condition | Test AUC |
+|-----------|----------|
+| Full model (best config) | **0.744** |
+| No pretraining | ~0.630 |
+| Freeze both TST1 & TST2 | ~0.633 |
+| Freeze TST1 only | ~0.716 |
+| No contrastive learning | ~0.732 |
+| Sliding-window pretraining | ~0.730 |
+
+See `docs/ABLATION_RESULTS.md` and `docs/OPTIMAL_CONFIGURATION.md` for detailed tables.
+
+---
+
+## API Server
+
+A REST API is provided under `api/` for model-based prediction and connection analysis:
+
+```bash
+cd api
+pip install -r requirements.txt
+python app.py
+```
+
+Endpoints: `POST /predict`, `POST /analyze_connections`. See `api/README.md` for details.
+
+---
+
+## Common Issues
+
+**Q: CUDA out of memory?**  
+Reduce `batch_size` to 16 or enable gradient checkpointing.
+
+**Q: LOSO fails with `LOSO requires site_ids`?**  
+Your `processed_data.pkl` must include a `site_ids` field. Re-run `prepare_data.py` on ABIDE data which contains site metadata.
+
+**Q: `git push` fails with "Password authentication is not supported"?**  
+GitHub disabled password auth in 2021. Use a Personal Access Token (PAT) as the password:  
+`echo "https://Leezy-Ray:<your_token>@github.com" > ~/.git-credentials`
+
+---
+
+## License
+
+This project is for research use only.
+
+---
+
+**TwoTST** · [GitHub](https://github.com/Leezy-Ray/twoTST) · Dual-Stream Self-Supervised Pretraining for fMRI-based ASD Diagnosis
